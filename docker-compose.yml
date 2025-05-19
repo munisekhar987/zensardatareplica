@@ -3,8 +3,6 @@ services:
   zookeeper:
     image: quay.io/debezium/zookeeper:latest
     container_name: zookeeper
-    ports:
-      - "2181:2181"
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
 
@@ -24,13 +22,12 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_NODE_ID: 1
       KAFKA_JMX_PORT: 9991
-      KAFKA_LOG_RETENTION_HOURS: 168
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
 
   schema-registry:
     image: confluentinc/cp-schema-registry:latest
     container_name: schema-registry
     depends_on:
+      - zookeeper
       - kafka
     ports:
       - "8081:8081"
@@ -53,15 +50,11 @@ services:
       GROUP_ID: 1
       CONFIG_STORAGE_TOPIC: connect_configs
       OFFSET_STORAGE_TOPIC: connect_offsets
-      STATUS_STORAGE_TOPIC: connect_statuses
-      CONNECT_REST_ADVERTISED_HOST_NAME: connect
       CONNECT_KEY_CONVERTER: io.confluent.connect.avro.AvroConverter
       CONNECT_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
       CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
       CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
-      CONNECT_LOG4J_ROOT_LOGLEVEL: DEBUG
-      CONNECT_LOG4J_LOGGERS: org.apache.kafka.connect.runtime.rest=DEBUG,io.debezium=DEBUG
-      PLUGIN_PATH: /kafka/connect
+
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
