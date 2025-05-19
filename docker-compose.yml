@@ -1,7 +1,7 @@
 version: '3.9'
 services:
   zookeeper:
-    image: debezium/zookeeper:latest
+    image: quay.io/debezium/zookeeper:latest
     container_name: zookeeper
     ports:
       - "2181:2181"
@@ -9,7 +9,7 @@ services:
       ZOOKEEPER_CLIENT_PORT: 2181
 
   kafka:
-    image: debezium/kafka:latest
+    image: quay.io/debezium/kafka:latest
     container_name: kafka
     depends_on:
       - zookeeper
@@ -41,7 +41,7 @@ services:
       SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT_INTERNAL://kafka:29092
 
   connect:
-    image: debezium/connect:latest
+    image: quay.io/debezium/connect:latest
     container_name: connect
     depends_on:
       - kafka
