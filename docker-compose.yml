@@ -26,8 +26,7 @@ services:
     image: confluentinc/cp-schema-registry:latest
     container_name: schema-registry
     depends_on:
-      kafka:
-        condition: service_healthy
+      - kafka
     ports:
       - "8081:8081"
     environment:
@@ -40,10 +39,8 @@ services:
     image: quay.io/debezium/connect:latest
     container_name: connect
     depends_on:
-      kafka:
-        condition: service_healthy
-      schema-registry:
-        condition: service_started
+      - kafka
+
     ports:
       - "8083:8083"
     environment:
