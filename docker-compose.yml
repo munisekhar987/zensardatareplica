@@ -61,8 +61,7 @@ services:
     ports:
       - "8094:8080"
     depends_on:
-      kafka:
-        condition: service_healthy
+      - kafka
     environment:
       DYNAMIC_CONFIG_ENABLED: 'true'
       KAFKA_CLUSTERS_0_NAME: local
