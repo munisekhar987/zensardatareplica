@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import jakarta.annotation.PostConstruct;
 import java.math.BigDecimal;
 import java.sql.*;
 import java.text.SimpleDateFormat;
@@ -17,6 +18,9 @@ import java.util.*;
 /**
  * Service for generating and executing SQL statements based on CDC events.
  * Uses table primary keys strictly from configuration.
+ * Enhanced to handle tables without primary keys that allow duplicates.
+ * Enhanced with UDT support for Oracle.
+ * Delegates operations on tables without primary keys to NoPrimaryKeyTableService.
  */
 @Service
 public class SqlExecutionService {
@@ -45,6 +49,9 @@ public class SqlExecutionService {
 
     @Autowired
     private CdcValueExtractorService valueExtractorService;
+
+    @Autowired
+    private NoPrimaryKeyTableService noPrimaryKeyTableService;
 
     // Case-insensitive map for field values
     private static class CaseInsensitiveMap<V> extends HashMap<String, V> {
@@ -107,10 +114,20 @@ public class SqlExecutionService {
 
     /**
      * Execute a standard INSERT statement with duplicate handling
+     * Enhanced with better UDT handling.
+     * Delegates to NoPrimaryKeyTableService for tables without primary keys.
      */
     public void executeStandardInsert(CdcEvent event, Map<String, FieldTypeInfo> fieldTypeMap) {
         try {
             String tableName = event.getTableName().toUpperCase();
+
+            // Check if table is configured to allow duplicates (no primary key)
+            if (noPrimaryKeyTableService.isTableWithoutPrimaryKey(tableName)) {
+                logger.info("Table {} is configured to allow duplicates. Delegating to NoPrimaryKeyTableService.", tableName);
+                noPrimaryKeyTableService.executeDirectInsert(event, fieldTypeMap);
+                return;
+            }
+
             // Use case-insensitive map for field values
             Map<String, Object> fieldValues = extractFieldValues(event.getAfterNode(), fieldTypeMap);
 
@@ -136,7 +153,8 @@ public class SqlExecutionService {
             // Get primary key fields for this table - convert to uppercase for consistency
             List<String> primaryKeyFields = getPrimaryKeyFields(tableName);
             if (primaryKeyFields.isEmpty()) {
-                logger.error("Primary key configuration not found for table {}. Cannot process INSERT operation without primary keys.", tableName);
+                logger.warn("Primary key configuration not found for table {}. Performing direct insert.", tableName);
+                executeRegularInsert(tableName, fieldValues);
                 return;
             }
 
@@ -197,10 +215,19 @@ public class SqlExecutionService {
 
     /**
      * Execute update operation based on CDC event.
+     * Delegates to NoPrimaryKeyTableService for tables without primary keys.
      */
     public void executeUpdate(CdcEvent event, Map<String, FieldTypeInfo> fieldTypeMap) {
         try {
             String tableName = event.getTableName().toUpperCase();
+
+            // Check if table is configured to allow duplicates (no primary key)
+            if (noPrimaryKeyTableService.isTableWithoutPrimaryKey(tableName)) {
+                logger.info("Table {} is configured to allow duplicates. Delegating to NoPrimaryKeyTableService for update.", tableName);
+                noPrimaryKeyTableService.executeUpdateWithAllFields(event, fieldTypeMap);
+                return;
+            }
+
             // Use case-insensitive map for field values
             Map<String, Object> fieldValues = extractFieldValues(event.getAfterNode(), fieldTypeMap);
 
@@ -262,10 +289,18 @@ public class SqlExecutionService {
 
     /**
      * Execute delete operation based on CDC event.
+     * Delegates to NoPrimaryKeyTableService for tables without primary keys.
      */
     public void executeDelete(CdcEvent event, Map<String, FieldTypeInfo> fieldTypeMap) {
         try {
             String tableName = event.getTableName().toUpperCase();
+
+            // Check if table is configured to allow duplicates (no primary key)
+            if (noPrimaryKeyTableService.isTableWithoutPrimaryKey(tableName)) {
+                logger.info("Table {} is configured to allow duplicates. Delegating to NoPrimaryKeyTableService for delete.", tableName);
+                noPrimaryKeyTableService.executeDeleteWithAllFields(event, fieldTypeMap);
+                return;
+            }
 
             // Get primary key fields for this table
             List<String> primaryKeyFields = getPrimaryKeyFields(tableName);
@@ -347,8 +382,9 @@ public class SqlExecutionService {
     /**
      * Extract all field values from a node using schema information.
      * Returns a case-insensitive map to handle field name case differences.
+     * Made public so that it can be used by NoPrimaryKeyTableService.
      */
-    private Map<String, Object> extractFieldValues(JsonNode dataNode, Map<String, FieldTypeInfo> fieldTypeMap) {
+    public Map<String, Object> extractFieldValues(JsonNode dataNode, Map<String, FieldTypeInfo> fieldTypeMap) {
         // Use our case-insensitive map implementation
         Map<String, Object> result = new CaseInsensitiveMap<>();
 
@@ -391,8 +427,9 @@ public class SqlExecutionService {
      * Get primary key fields for a table from configuration.
      * Returns a list of primary key field names in uppercase for consistency.
      * Returns an empty list if no configuration is found.
+     * Made public so it can be used by NoPrimaryKeyTableService or other services.
      */
-    private List<String> getPrimaryKeyFields(String tableName) {
+    public List<String> getPrimaryKeyFields(String tableName) {
         // Normalize table name to uppercase
         String upperTableName = tableName.toUpperCase();
 
@@ -406,7 +443,7 @@ public class SqlExecutionService {
         }
 
         if (primaryKeyConfig == null || primaryKeyConfig.trim().isEmpty()) {
-            logger.error("No primary key configuration found for table: {}", upperTableName);
+            logger.warn("No primary key constraint for table, please check if table is allowed duplicates: {}", upperTableName);
             return Collections.emptyList();
         }
 
@@ -475,8 +512,9 @@ public class SqlExecutionService {
 
     /**
      * Execute a regular INSERT statement without duplicate checking
+     * Made public so that it can be used by NoPrimaryKeyTableService.
      */
-    private void executeRegularInsert(String tableName, Map<String, Object> fieldValues) {
+    public void executeRegularInsert(String tableName, Map<String, Object> fieldValues) {
         StringBuilder columns = new StringBuilder();
         StringBuilder placeholders = new StringBuilder();
         List<Object> params = new ArrayList<>();
@@ -561,8 +599,9 @@ public class SqlExecutionService {
 
     /**
      * Execute SQL statement with parameters.
+     * Made public so that it can be used by NoPrimaryKeyTableService.
      */
-    private void executeStatement(String sql, List<Object> params) {
+    public void executeStatement(String sql, List<Object> params) {
         logger.info("Executing SQL: {}", sql);
         logger.info("Parameters: {}", params);
 
@@ -589,14 +628,66 @@ public class SqlExecutionService {
 
     /**
      * Set a parameter in a prepared statement with appropriate type handling.
+     * Enhanced to handle UDT objects and SQL expressions.
      */
     private void setStatementParameter(PreparedStatement statement, int index, Object param) throws SQLException {
         if (param == null) {
             logger.debug("Setting parameter #{} to NULL", index);
             statement.setNull(index, Types.NULL);
         } else if (param instanceof String) {
-            logger.debug("Setting parameter #{} to String: {}", index, param);
-            statement.setString(index, (String) param);
+            String strParam = (String) param;
+
+            // Check if this appears to be a UDT constructor string (e.g., "HANDOFF_ROUTING_ROUTE_NO('123','456')")
+            if ((strParam.startsWith("HANDOFF_ROUTING_ROUTE_NO(") && strParam.endsWith(")")) ||
+                    (strParam.startsWith("HANDOFF_ROADNET_ROUTE_NO(") && strParam.endsWith(")"))) {
+
+                logger.debug("Setting parameter #{} as Oracle UDT constructor: {}", index, strParam);
+
+                // For Oracle UDTs, we need to pass the constructor string directly to Oracle for evaluation
+                // Create a PreparedStatement that executes an expression
+                // We'll use a special Oracle syntax that allows expression evaluation
+
+                // For Oracle 12c+, we can use the following approach:
+                // Create a query that selects the UDT constructor expression
+                // E.g., SELECT HANDOFF_ROUTING_ROUTE_NO('123','456') AS column_value FROM DUAL
+
+                Connection conn = statement.getConnection();
+                String udtConstructor = strParam;
+
+                try {
+                    // Extract the UDT type name from the constructor string
+                    int openParenIndex = udtConstructor.indexOf('(');
+                    String udtTypeName = udtConstructor.substring(0, openParenIndex);
+
+                    // Create a query to evaluate the UDT constructor
+                    String query = "SELECT " + udtConstructor + " AS column_value FROM DUAL";
+
+                    try (Statement selectStmt = conn.createStatement();
+                         ResultSet rs = selectStmt.executeQuery(query)) {
+
+                        if (rs.next()) {
+                            // Get the constructed UDT object
+                            Object udtObject = rs.getObject(1);
+
+                            // Set the parameter using the UDT object
+                            logger.debug("Setting parameter #{} with UDT object from database", index);
+                            statement.setObject(index, udtObject);
+                        } else {
+                            // Fall back to setting as string if evaluation fails
+                            logger.warn("Failed to evaluate UDT constructor, falling back to string parameter");
+                            statement.setString(index, strParam);
+                        }
+                    }
+                } catch (SQLException e) {
+                    // If the UDT constructor evaluation fails, fall back to setting as string
+                    logger.warn("Exception while evaluating UDT constructor ({}), falling back to string parameter: {}",
+                            udtConstructor, e.getMessage());
+                    statement.setString(index, strParam);
+                }
+            } else {
+                logger.debug("Setting parameter #{} to String: {}", index, strParam);
+                statement.setString(index, strParam);
+            }
         } else if (param instanceof Integer) {
             logger.debug("Setting parameter #{} to Integer: {}", index, param);
             statement.setInt(index, (Integer) param);
@@ -626,6 +717,7 @@ public class SqlExecutionService {
 
     /**
      * Handle SQL exceptions with improved diagnostics.
+     * Enhanced to provide more info about UDT type mismatches.
      */
     private void handleSqlException(SQLException e, String sql) {
         logger.error("Error executing SQL statement: {}", e.getMessage(), e);
@@ -644,6 +736,32 @@ public class SqlExecutionService {
         // Check if it's a data type error
         if (e.getMessage().contains("inconsistent datatypes") || e.getMessage().contains("ORA-00932")) {
             logger.error("Data type inconsistency detected. Verify table column types in Oracle match the data types being sent.");
+
+            // Try to extract more details about the inconsistent datatypes
+            String errorMsg = e.getMessage();
+            if (errorMsg.contains("expected") && errorMsg.contains("got")) {
+                int expectedIdx = errorMsg.indexOf("expected");
+                int gotIdx = errorMsg.indexOf("got", expectedIdx);
+
+                if (expectedIdx >= 0 && gotIdx >= 0) {
+                    String expectedType = errorMsg.substring(expectedIdx + "expected".length(), gotIdx).trim();
+                    String gotType = errorMsg.substring(gotIdx + "got".length()).trim();
+
+                    logger.error("Data type mismatch: Expected '{}' but got '{}'", expectedType, gotType);
+                    logger.error("This may be due to a UDT type mismatch. Check your UDT type mappings.");
+
+                    // If this involves our known UDT types, provide more specific guidance
+                    if (expectedType.contains("HANDOFF_ROUTING_ROUTE_NO") ||
+                            expectedType.contains("HANDOFF_ROADNET_ROUTE_NO") ||
+                            gotType.contains("HANDOFF_ROUTING_ROUTE_NO") ||
+                            gotType.contains("HANDOFF_ROADNET_ROUTE_NO")) {
+
+                        logger.error("The error involves UDT types. Ensure your PostgreSQL UDT values are correctly converted to Oracle format.");
+                        logger.error("For VARRAY types, Oracle expects: TYPE_NAME('value1', 'value2', ...)");
+                        logger.error("Review the postgres.udt.type-mapping and postgres.udt.column-mapping configuration.");
+                    }
+                }
+            }
         }
     }
 
@@ -738,8 +856,9 @@ public class SqlExecutionService {
 
     /**
      * Construct SQL with actual values for debugging.
+     * Made public so that it can be used by NoPrimaryKeyTableService.
      */
-    private String constructDebugSql(String sql, List<Object> params) {
+    public String constructDebugSql(String sql, List<Object> params) {
         StringBuilder result = new StringBuilder(sql);
         int paramIndex = 0;
         int questionMarkPos;
@@ -760,6 +879,15 @@ public class SqlExecutionService {
         if (param == null) {
             return "NULL";
         } else if (param instanceof String) {
+            String strParam = (String) param;
+
+            // Special handling for UDT constructor strings
+            if ((strParam.startsWith("HANDOFF_ROUTING_ROUTE_NO(") && strParam.endsWith(")")) ||
+                    (strParam.startsWith("HANDOFF_ROADNET_ROUTE_NO(") && strParam.endsWith(")"))) {
+                // For UDT constructor strings, leave as is
+                return strParam;
+            }
+
             return "'" + ((String) param).replace("'", "''") + "'";
         } else if (param instanceof java.util.Date) {
             return "TO_TIMESTAMP('" + timestampFormat.format((java.util.Date) param) + "', 'YYYY-MM-DD HH24:MI:SS')";

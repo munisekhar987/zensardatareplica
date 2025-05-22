@@ -3,11 +3,13 @@ package com.zensar.data.replication.consumer;
 import com.zensar.data.replication.model.CdcEvent;
 import com.zensar.data.replication.model.FieldTypeInfo;
 import com.zensar.data.replication.model.TopicTableMapping;
+import com.zensar.data.replication.service.PostgresSourceService;
 import com.zensar.data.replication.service.SchemaParserService;
 import com.zensar.data.replication.service.SqlExecutionService;
 import com.zensar.data.replication.service.TopicMappingService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,11 +17,15 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Service;
 
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
 
 /**
  * Main service for consuming CDC events from Kafka and coordinating processing.
  * Enhanced to dynamically handle multiple topics and tables using configurable mappings.
+ * Added support for UDT column handling by fetching complete rows from PostgreSQL.
+ * Enhanced with case-insensitive field handling.
  */
 @Service
 public class CdcConsumerService {
@@ -29,17 +35,20 @@ public class CdcConsumerService {
     private final SchemaParserService schemaParser;
     private final SqlExecutionService sqlExecutionService;
     private final TopicMappingService topicMappingService;
+    private final PostgresSourceService postgresSourceService;
 
     @Autowired
     public CdcConsumerService(
             ObjectMapper objectMapper,
             SchemaParserService schemaParser,
             SqlExecutionService sqlExecutionService,
-            TopicMappingService topicMappingService) {
+            TopicMappingService topicMappingService,
+            PostgresSourceService postgresSourceService) {
         this.objectMapper = objectMapper;
         this.schemaParser = schemaParser;
         this.sqlExecutionService = sqlExecutionService;
         this.topicMappingService = topicMappingService;
+        this.postgresSourceService = postgresSourceService;
     }
 
     /**
@@ -87,12 +96,131 @@ public class CdcConsumerService {
             // Extract schema information
             Map<String, FieldTypeInfo> fieldTypeMap = schemaParser.buildFieldTypeMap(rootNode.get("schema"));
 
+            // Check if this table has UDT columns that need to be fetched from PostgreSQL
+            if (postgresSourceService.isUdtTable(cdcEvent.getTableName())) {
+                logger.info("Table {} has UDT columns. Fetching complete row data from PostgreSQL.",
+                        cdcEvent.getTableName());
+
+                // Enhance the CDC event with complete data from PostgreSQL
+                enhanceCdcEventWithPostgresData(cdcEvent);
+            }
+
             // Process the event based on operation type
             processEvent(cdcEvent, fieldTypeMap);
 
         } catch (Exception e) {
             logger.error("Error processing Kafka message: {}", e.getMessage(), e);
         }
+    }
+
+    /**
+     * Enhance the CDC event with complete data from PostgreSQL, including UDT columns.
+     * This method enriches the afterNode and beforeNode with data from PostgreSQL.
+     * Enhanced with case-insensitive field name handling.
+     */
+    private void enhanceCdcEventWithPostgresData(CdcEvent cdcEvent) {
+        try {
+            // Fetch the complete row data from PostgreSQL
+            Map<String, Object> completeRowData = postgresSourceService.fetchCompleteRowData(cdcEvent);
+
+            if (completeRowData.isEmpty()) {
+                logger.warn("No data fetched from PostgreSQL for table {}", cdcEvent.getTableName());
+                return;
+            }
+
+            // Enhance afterNode for INSERT and UPDATE operations
+            if ((cdcEvent.isInsert() || cdcEvent.isUpdate() || cdcEvent.isRead()) &&
+                    cdcEvent.getAfterNode() != null) {
+                enhanceJsonNode((ObjectNode) cdcEvent.getAfterNode(), completeRowData);
+                logger.info("Enhanced afterNode with PostgreSQL data for {} operation", cdcEvent.getOperation());
+            }
+
+            // Enhance beforeNode for DELETE operations
+            // This is optional since the row might already be deleted in PostgreSQL
+            if (cdcEvent.isDelete() && cdcEvent.getBeforeNode() != null && !completeRowData.isEmpty()) {
+                enhanceJsonNode((ObjectNode) cdcEvent.getBeforeNode(), completeRowData);
+                logger.info("Enhanced beforeNode with PostgreSQL data for DELETE operation");
+            }
+        } catch (Exception e) {
+            logger.error("Error enhancing CDC event with PostgreSQL data: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Enhance a JSON node with data from PostgreSQL
+     * Enhanced with case-insensitive field name handling.
+     */
+    private void enhanceJsonNode(ObjectNode node, Map<String, Object> postgresData) {
+        // Create a deep copy to avoid concurrent modification
+        Map<String, Object> data = new HashMap<>(postgresData);
+
+        // Add all columns from PostgreSQL data to the node
+        for (Map.Entry<String, Object> entry : data.entrySet()) {
+            String columnName = entry.getKey();
+            Object value = entry.getValue();
+
+            // Skip null values
+            if (value == null) {
+                continue;
+            }
+
+            // Skip if the column already exists in the node (case-insensitive check)
+            if (hasFieldCaseInsensitive(node, columnName)) {
+                logger.debug("Column {} already exists in the node (case-insensitive match). Not overwriting.", columnName);
+                continue;
+            }
+
+            // Convert Java types to appropriate JsonNode types
+            if (value instanceof String) {
+                node.put(columnName, (String) value);
+            } else if (value instanceof Integer) {
+                node.put(columnName, (Integer) value);
+            } else if (value instanceof Long) {
+                node.put(columnName, (Long) value);
+            } else if (value instanceof Double) {
+                node.put(columnName, (Double) value);
+            } else if (value instanceof Boolean) {
+                node.put(columnName, (Boolean) value);
+            } else if (value instanceof java.sql.Timestamp) {
+                // Convert to milliseconds since epoch
+                java.sql.Timestamp ts = (java.sql.Timestamp) value;
+                node.put(columnName, ts.getTime());
+            } else if (value instanceof java.sql.Date) {
+                // Convert to milliseconds since epoch
+                java.sql.Date date = (java.sql.Date) value;
+                node.put(columnName, date.getTime());
+            } else {
+                // For other types, convert to string
+                node.put(columnName, value.toString());
+            }
+        }
+
+        logger.debug("Enhanced node with {} columns from PostgreSQL", data.size());
+    }
+
+    /**
+     * Check if a field exists in a JsonNode with case-insensitive matching
+     *
+     * @param node The JsonNode to check
+     * @param fieldName The field name to look for (case-insensitive)
+     * @return true if the field exists, false otherwise
+     */
+    private boolean hasFieldCaseInsensitive(JsonNode node, String fieldName) {
+        // Case 1: Exact match
+        if (node.has(fieldName)) {
+            return true;
+        }
+
+        // Case 2: Case-insensitive match
+        Iterator<String> fieldNames = node.fieldNames();
+        while (fieldNames.hasNext()) {
+            String name = fieldNames.next();
+            if (name.equalsIgnoreCase(fieldName)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
