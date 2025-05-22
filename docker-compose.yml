@@ -1,50 +1,49 @@
-version: '3.9'
+version: '3.8'
 
 services:
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.5.1
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2182
-
-  kafka:
-    image: confluentinc/cp-kafka:7.5.1
-    depends_on:
-      - zookeeper
+  cdc-consumer:
+    image: zensar-data-replication
+    container_name: cdc-consumer
     ports:
-      - "9094:9094"
+      - "9095:9095"
     environment:
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2182
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9094,PLAINTEXT_INTERNAL://kafka:29094
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9094,PLAINTEXT_INTERNAL://0.0.0.0:29094
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_NODE_ID: 1
-      KAFKA_JMX_PORT: 9991
-
-#  schema-registry:
-#    image: confluentinc/cp-schema-registry:latest
-#    container_name: schema-registry
-#    depends_on:
-#      - kafka
-#    ports:
-#      - "8081:8081"
-#    environment:
-#      SCHEMA_REGISTRY_KAFKASTORE_CONNECTION_URL: zookeeper:2181
-#      SCHEMA_REGISTRY_HOST_NAME: schema-registry
-#      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
-#      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT_INTERNAL://kafka:29092
+      SERVER_PORT: 9095
+      KAFKA_BOOTSTRAP_SERVERS: bootstrap.transapp-rollback-poc.us-east4.managedkafka.pr-transapp-dev-use4-01.cloud.goog:9092
+      KAFKA_GROUP_ID: multi-cdc-consumer
+      KAFKA_AUTO_OFFSET_RESET: earliest
+      KAFKA_KEY_DESERIALIZER: org.apache.kafka.common.serialization.StringDeserializer
+      KAFKA_VALUE_DESERIALIZER: org.apache.kafka.common.serialization.StringDeserializer
+      KAFKA_SECURITY_PROTOCOL: SASL_SSL
+      KAFKA_SASL_MECHANISM: PLAIN
+      KAFKA_SASL_JAAS_CONFIG: >
+        org.apache.kafka.common.security.plain.PlainLoginModule required username="..." password="...";
+      CDC_TOPICS: mypg.public.handoff_batchroute,mypg.public.deliveryconfirm,mypg.public.handoff_batchstop,mypg.public.dispatch
+      CDC_TOPIC_TABLE_MAPPINGS: "{'mypg.public.handoff_batchroute': 'HANDOFF_BATCHROUTE','mypg.public.handoff_batchstop': 'HANDOFF_BATCHSTOP','mypg.public.deliveryconfirm': 'DELIVERYCONFIRM','mypg.public.dispatch': 'DISPATCH'}"
+      CDC_TABLE_PRIMARY_KEYS: "{'HANDOFF_BATCHROUTE': 'BATCH_ID','HANDOFF_BATCHSTOP': 'BATCH_ID,WEBORDER_ID','DISPATCH': 'DISPATCH_ID'}"
+      CDC_ALLOW_DUPLICATES: DELIVERYCONFIRM
+      CDC_HANDLE_DUPLICATES: merge
+      ORACLE_URL: jdbc:oracle:thin:@localhost:1521/XEPDB1
+      ORACLE_USER: system
+      ORACLE_PASSWORD: admin
+      ORACLE_SCHEMA: SYSTEM
+      POSTGRES_URL: jdbc:postgresql://localhost:5432/postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: mysecretpassword
+      POSTGRES_SCHEMA: public
+      POSTGRES_UDT_TABLES: HANDOFF_BATCHROUTE:BATCH_ID
+      POSTGRES_UDT_TYPE_MAPPING: "{'handoff_routing_route_no':'HANDOFF_ROUTING_ROUTE_NO','handoff_roadnet_route_no':'HANDOFF_ROADNET_ROUTE_NO'}"
+      POSTGRES_UDT_COLUMN_MAPPING: "{'HANDOFF_BATCHROUTE.ROUTING_ROUTE_NO':'handoff_routing_route_no','HANDOFF_BATCHROUTE.ROADNET_ROUTE_NO':'handoff_roadnet_route_no'}"
+      LOG_LEVEL_REPLICATION: INFO
+      LOG_LEVEL_CONSUMER: DEBUG
+      LOG_LEVEL_SERVICE: DEBUG
 
   connect:
-    image: quay.io/debezium/connect:latest
+    image: debezium-connect-gcp
     container_name: connect
-    depends_on:
-      - kafka
-
     ports:
-      - "8084:8084"
+      - "8083:8083"
     environment:
-      BOOTSTRAP_SERVERS: kafka:29094
+      BOOTSTRAP_SERVERS: bootstrap.transapp-rollback-poc.us-east4.managedkafka.pr-transapp-dev-use4-01.cloud.goog:9092
       GROUP_ID: 1
       CONFIG_STORAGE_TOPIC: connect_configs
       OFFSET_STORAGE_TOPIC: connect_offsets
@@ -53,15 +52,7 @@ services:
       CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
       CONNECT_REST_ADVERTISED_HOST_NAME: connect
 
-  kafka-ui:
-    image: provectuslabs/kafka-ui:latest
-    container_name: kafka-ui
-    ports:
-      - "8096:8096"
-    depends_on:
-      - kafka
-    environment:
-      DYNAMIC_CONFIG_ENABLED: 'true'
-      KAFKA_CLUSTERS_0_NAME: local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29094
-
+      # Security for Kafka connection
+      CONNECT_SECURITY_PROTOCOL: SASL_SSL
+      CONNECT_SASL_MECHANISM: PLAIN
+      CONNECT_SASL_JAAS_CONFIG: org.apache.kafka.common.security.plain.PlainLoginModule required username="sa-poc-kafka-user@pr-transapp-dev-use4-01.iam.gserviceaccount.com" password="...";  # replace with actual long key
