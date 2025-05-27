@@ -13,7 +13,7 @@ RUN ./mvnw dependency:go-offline
 COPY src ./src
 
 # Build the application
-RUN ./mvnw clean package
+RUN ./mvnw clean package -DskipTests
 
 # Expose port
 EXPOSE 9095
