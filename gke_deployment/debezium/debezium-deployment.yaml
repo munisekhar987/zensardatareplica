@@ -21,18 +21,6 @@ spec:
           envFrom:
             - configMapRef:
                 name: debezium-config
-          env:
-            - name: KAFKA_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: debezium-secrets
-                  key: KAFKA_PASSWORD
-            - name: CONNECT_SASL_JAAS_CONFIG
-              value: 'org.apache.kafka.common.security.plain.PlainLoginModule required username="$(KAFKA_USERNAME)" password="$(KAFKA_PASSWORD)";'
-            - name: CONNECT_PRODUCER_SASL_JAAS_CONFIG
-              value: 'org.apache.kafka.common.security.plain.PlainLoginModule required username="$(KAFKA_USERNAME)" password="$(KAFKA_PASSWORD)";'
-            - name: CONNECT_CONSUMER_SASL_JAAS_CONFIG
-              value: 'org.apache.kafka.common.security.plain.PlainLoginModule required username="$(KAFKA_USERNAME)" password="$(KAFKA_PASSWORD)";'
           resources:
             requests:
               memory: "2Gi"
