@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: debezium-service
+  namespace: debezium
+spec:
+  selector:
+    app: debezium-connector
+  ports:
+    - port: 8083
+      targetPort: 8083
+  type: LoadBalancer
