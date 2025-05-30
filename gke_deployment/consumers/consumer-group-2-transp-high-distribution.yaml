@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cdc-consumer-transp-high-distribution
+  namespace: cdc-consumers
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cdc-consumer-transp-high-distribution
+  template:
+    metadata:
+      labels:
+        app: cdc-consumer-transp-high-distribution
+        schema: transp
+        group: high-distribution
+    spec:
+      containers:
+        - name: cdc-consumer
+          image: gcr.io/YOUR_PROJECT_ID/cdc-datareplication-app:v1.0.0
+          ports:
+            - containerPort: 9095
+          envFrom:
+            - configMapRef:
+                name: cdc-consumer-config
+            - secretRef:
+                name: cdc-consumer-secrets
+          env:
+            - name: KAFKA_GROUP_ID
+              value: "transp-high-distribution-group"
+            - name: CDC_TOPICS
+              value: "mytestp.transp.tip_distribution"
+            - name: CDC_TOPIC_TABLE_MAPPINGS
+              value: "{'mytestp.transp.tip_distribution': 'TIP_DISTRIBUTION'}"
+            - name: CDC_TABLE_PRIMARY_KEYS
+              value: "{'TIP_DISTRIBUTION': 'tip_id'}"
+            - name: SPRING_KAFKA_CONSUMER_MAX_POLL_RECORDS
+              value: "1500"
+          resources:
+            requests:
+              memory: "3Gi"
+              cpu: "1500m"
+            limits:
+              memory: "6Gi"
+              cpu: "3000m"

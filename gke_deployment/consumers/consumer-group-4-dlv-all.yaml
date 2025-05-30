@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cdc-consumer-dlv-all
+  namespace: cdc-consumers
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cdc-consumer-dlv-all
+  template:
+    metadata:
+      labels:
+        app: cdc-consumer-dlv-all
+    spec:
+      containers:
+        - name: cdc-consumer
+          image: gcr.io/YOUR_PROJECT_ID/cdc-datareplication-app:v1.0.0
+          ports:
+            - containerPort: 9095
+          envFrom:
+            - configMapRef:
+                name: cdc-consumer-config
+            - secretRef:
+                name: cdc-consumer-secrets
+          env:
+            - name: KAFKA_GROUP_ID
+              value: "dlv-all-group"
+            - name: CDC_TOPICS
+              value: "mydlv.dlv.reservation,mydlv.dlv.timeslot,mydlv.dlv.delivery_building,mydlv.dlv.delivery_location,mydlv.dlv.delivery_building_detail"
+            - name: CDC_TOPIC_TABLE_MAPPINGS
+              value: "{'mydlv.dlv.reservation': 'RESERVATION', 'mydlv.dlv.timeslot': 'TIMESLOT', 'mydlv.dlv.delivery_building': 'DELIVERY_BUILDING', 'mydlv.dlv.delivery_location': 'DELIVERY_LOCATION', 'mydlv.dlv.delivery_building_detail': 'DELIVERY_BUILDING_DETAIL'}"
+            - name: CDC_TABLE_PRIMARY_KEYS
+              value: "{'RESERVATION': 'reservation_id', 'TIMESLOT': 'timeslot_id', 'DELIVERY_BUILDING': 'building_id', 'DELIVERY_LOCATION': 'location_id', 'DELIVERY_BUILDING_DETAIL': 'detail_id'}"
+            - name: SPRING_KAFKA_CONSUMER_MAX_POLL_RECORDS
+              value: "800"
+            - name: ORACLE_SCHEMA
+              value: "DLV"
+            - name: POSTGRES_SCHEMA
+              value: "dlv"
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1000m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 9095
+            initialDelaySeconds: 120
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 9095
+            initialDelaySeconds: 60
+            periodSeconds: 15

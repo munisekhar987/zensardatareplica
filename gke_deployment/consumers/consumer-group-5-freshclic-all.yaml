@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cdc-consumer-freshclic-all
+  namespace: cdc-consumers
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cdc-consumer-freshclic-all
+  template:
+    metadata:
+      labels:
+        app: cdc-consumer-freshclic-all
+    spec:
+      containers:
+        - name: cdc-consumer
+          image: gcr.io/YOUR_PROJECT_ID/cdc-datareplication-app:v1.0.0
+          ports:
+            - containerPort: 9095
+          envFrom:
+            - configMapRef:
+                name: cdc-consumer-config
+            - secretRef:
+                name: cdc-consumer-secrets
+          env:
+            - name: KAFKA_GROUP_ID
+              value: "freshclic-all-group"
+            - name: CDC_TOPICS
+              value: "mytestp.freshclic.deliverytracker"
+            - name: CDC_TOPIC_TABLE_MAPPINGS
+              value: "{'mytestp.freshclic.deliverytracker': 'DELIVERYTRACKER'}"
+            - name: CDC_TABLE_PRIMARY_KEYS
+              value: "{'DELIVERYTRACKER': 'tracker_id'}"
+            - name: SPRING_KAFKA_CONSUMER_MAX_POLL_RECORDS
+              value: "2500"
+            - name: SPRING_KAFKA_CONSUMER_FETCH_MIN_BYTES
+              value: "150000"
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "2000m"
+            limits:
+              memory: "8Gi"
+              cpu: "4000m"
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 9095
+            initialDelaySeconds: 120
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 9095
+            initialDelaySeconds: 60
+            periodSeconds: 15
