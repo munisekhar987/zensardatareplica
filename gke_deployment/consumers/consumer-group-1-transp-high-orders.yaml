@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: cdc-consumer
-          image: gcr.io/YOUR_PROJECT_ID/cdc-datareplication-app:v1.0.0
+          image: gcr.io/fd-pr-transapp-dev-use4-01/cdc_consumer:latest
           ports:
             - containerPort: 9095
           envFrom:
