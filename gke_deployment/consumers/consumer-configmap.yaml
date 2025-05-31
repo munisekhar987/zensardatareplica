@@ -8,9 +8,5 @@ data:
   SPRING_APP_NAME: "CDC-DataReplicationAPP"
   KAFKA_BOOTSTRAP_SERVERS: "bootstrap.transapp-rollback-poc.us-east4.managedkafka.pr-transapp-dev-use4-01.cloud.goog:9092"
   KAFKA_OFFSET_RESET: "earliest"
-  KAFKA_SECURITY_PROTOCOL: "SASL_SSL"
-  KAFKA_SASL_MECHANISM: "OAUTHBEARER"
-  KAFKA_SASL_LOGIN_CALLBACK_HANDLER_CLASS: "com.google.cloud.hosted.kafka.auth.GcpLoginCallbackHandler"
-  KAFKA_SASL_JAAS_CONFIG: "org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required;"
   CDC_DUPLICATE_STRATEGY: "merge"
 
