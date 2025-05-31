@@ -15,9 +15,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.annotation.KafkaListener;
-import org.springframework.kafka.support.Acknowledgment;
-import org.springframework.kafka.support.KafkaHeaders;
-import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
@@ -26,10 +23,9 @@ import java.util.Map;
 
 /**
  * Main service for consuming CDC events from Kafka and coordinating processing.
- * Uses Spring Boot's auto-configuration with manual acknowledgment enabled via properties.
- *
- * Required application.properties:
- * spring.kafka.consumer.enable-auto-commit=false
+ * Enhanced to dynamically handle multiple topics and tables using configurable mappings.
+ * Added support for UDT column handling by fetching complete rows from PostgreSQL.
+ * Enhanced with case-insensitive field handling.
  */
 @Service
 public class CdcConsumerService {
@@ -56,31 +52,18 @@ public class CdcConsumerService {
     }
 
     /**
-     * Consume CDC events from Kafka with manual acknowledgment.
-     * Manual acknowledgment is enabled via application.properties:
-     * spring.kafka.consumer.enable-auto-commit=false
+     * Consume CDC events from Kafka, using a comma-separated list of topics.
      */
     @KafkaListener(topics = "#{'${cdc.kafka.topics}'.split(',')}")
-    public void consume(
-            ConsumerRecord<String, String> message,
-            Acknowledgment acknowledgment,
-            @Header(KafkaHeaders.RECEIVED_TOPIC) String topic,
-            @Header(KafkaHeaders.RECEIVED_PARTITION) int partition,
-            @Header(KafkaHeaders.OFFSET) long offset) {
-
-        long startTime = System.currentTimeMillis();
-        boolean processed = false;
-
+    public void consume(ConsumerRecord<String, String> message) {
         try {
+            String topic = message.topic();
             String eventMessage = message.value();
-            logger.info("CDC Event Received from topic: {}, partition: {}, offset: {}",
-                    topic, partition, offset);
+            logger.info("CDC Event Received from topic {}", topic);
             logger.debug("Event payload: {}", eventMessage);
 
-            if (eventMessage == null || eventMessage.trim().isEmpty()) {
-                logger.warn("Skipping empty event from topic: {}, partition: {}, offset: {}",
-                        topic, partition, offset);
-                acknowledgment.acknowledge();
+            if (eventMessage == null) {
+                logger.warn("Skipping as empty event from topic: {}", topic);
                 return;
             }
 
@@ -99,8 +82,6 @@ public class CdcConsumerService {
                     mapping = new TopicTableMapping(topic, tableName);
                 } else {
                     logger.error("Cannot process event - unable to determine target table for topic: {}", topic);
-                    // Acknowledge even failed events to prevent infinite retry
-                    acknowledgment.acknowledge();
                     return;
                 }
             }
@@ -109,8 +90,6 @@ public class CdcConsumerService {
             CdcEvent cdcEvent = parseEvent(rootNode, topic, mapping.getTableName());
             if (cdcEvent == null) {
                 logger.warn("Failed to parse CDC event from topic: {}", topic);
-                // Acknowledge malformed events to prevent infinite retry
-                acknowledgment.acknowledge();
                 return;
             }
 
@@ -129,66 +108,19 @@ public class CdcConsumerService {
             // Process the event based on operation type
             processEvent(cdcEvent, fieldTypeMap);
 
-            // If we reach here, processing was successful
-            processed = true;
-
-            // Acknowledge successful processing
-            acknowledgment.acknowledge();
-
-            long processingTime = System.currentTimeMillis() - startTime;
-            logger.info("Successfully processed CDC event for table: {} in {}ms (topic: {}, partition: {}, offset: {})",
-                    cdcEvent.getTableName(), processingTime, topic, partition, offset);
-
         } catch (Exception e) {
-            long processingTime = System.currentTimeMillis() - startTime;
-            logger.error("Error processing Kafka message from topic: {}, partition: {}, offset: {} after {}ms: {}",
-                    topic, partition, offset, processingTime, e.getMessage(), e);
-
-            // For critical errors, we might want to acknowledge to prevent infinite retry
-            // depending on your error handling strategy
-            if (shouldAcknowledgeOnError(e)) {
-                acknowledgment.acknowledge();
-                logger.warn("Acknowledged failed message to prevent infinite retry");
-            }
-            // If not acknowledged, the message will be retried based on Kafka consumer configuration
-        } finally {
-            if (!processed) {
-                logger.warn("CDC event processing completed unsuccessfully for topic: {}, partition: {}, offset: {}",
-                        topic, partition, offset);
-            }
+            logger.error("Error processing Kafka message: {}", e.getMessage(), e);
         }
     }
 
     /**
-     * Determine if we should acknowledge a message even when processing fails.
-     * This prevents infinite retry loops for certain types of errors.
+     * Enhance the CDC event with complete data from PostgreSQL, including UDT columns.
+     * This method enriches the afterNode and beforeNode with data from PostgreSQL.
+     * Enhanced with case-insensitive field name handling.
      */
-    private boolean shouldAcknowledgeOnError(Exception exception) {
-        // Acknowledge for parsing errors, configuration errors, etc.
-        // These are unlikely to be resolved by retrying
-        if (exception instanceof com.fasterxml.jackson.core.JsonParseException ||
-                exception instanceof com.fasterxml.jackson.databind.JsonMappingException ||
-                exception instanceof IllegalArgumentException) {
-            return true;
-        }
-
-        // Don't acknowledge for SQL errors, connection issues, etc.
-        // These might be resolved by retrying
-        if (exception instanceof java.sql.SQLException ||
-                exception instanceof java.sql.SQLTransientException ||
-                exception instanceof java.net.ConnectException) {
-            return false;
-        }
-
-        // For other exceptions, acknowledge after a certain number of attempts
-        // This would require implementing retry counting logic
-        return false;
-    }
-
-    // ... rest of the methods remain the same as in the previous implementation
-
     private void enhanceCdcEventWithPostgresData(CdcEvent cdcEvent) {
         try {
+            // Fetch the complete row data from PostgreSQL
             Map<String, Object> completeRowData = postgresSourceService.fetchCompleteRowData(cdcEvent);
 
             if (completeRowData.isEmpty()) {
@@ -196,12 +128,15 @@ public class CdcConsumerService {
                 return;
             }
 
+            // Enhance afterNode for INSERT and UPDATE operations
             if ((cdcEvent.isInsert() || cdcEvent.isUpdate() || cdcEvent.isRead()) &&
                     cdcEvent.getAfterNode() != null) {
                 enhanceJsonNode((ObjectNode) cdcEvent.getAfterNode(), completeRowData);
                 logger.info("Enhanced afterNode with PostgreSQL data for {} operation", cdcEvent.getOperation());
             }
 
+            // Enhance beforeNode for DELETE operations
+            // This is optional since the row might already be deleted in PostgreSQL
             if (cdcEvent.isDelete() && cdcEvent.getBeforeNode() != null && !completeRowData.isEmpty()) {
                 enhanceJsonNode((ObjectNode) cdcEvent.getBeforeNode(), completeRowData);
                 logger.info("Enhanced beforeNode with PostgreSQL data for DELETE operation");
@@ -211,22 +146,31 @@ public class CdcConsumerService {
         }
     }
 
+    /**
+     * Enhance a JSON node with data from PostgreSQL
+     * Enhanced with case-insensitive field name handling.
+     */
     private void enhanceJsonNode(ObjectNode node, Map<String, Object> postgresData) {
+        // Create a deep copy to avoid concurrent modification
         Map<String, Object> data = new HashMap<>(postgresData);
 
+        // Add all columns from PostgreSQL data to the node
         for (Map.Entry<String, Object> entry : data.entrySet()) {
             String columnName = entry.getKey();
             Object value = entry.getValue();
 
+            // Skip null values
             if (value == null) {
                 continue;
             }
 
+            // Skip if the column already exists in the node (case-insensitive check)
             if (hasFieldCaseInsensitive(node, columnName)) {
                 logger.debug("Column {} already exists in the node (case-insensitive match). Not overwriting.", columnName);
                 continue;
             }
 
+            // Convert Java types to appropriate JsonNode types
             if (value instanceof String) {
                 node.put(columnName, (String) value);
             } else if (value instanceof Integer) {
@@ -238,12 +182,15 @@ public class CdcConsumerService {
             } else if (value instanceof Boolean) {
                 node.put(columnName, (Boolean) value);
             } else if (value instanceof java.sql.Timestamp) {
+                // Convert to milliseconds since epoch
                 java.sql.Timestamp ts = (java.sql.Timestamp) value;
                 node.put(columnName, ts.getTime());
             } else if (value instanceof java.sql.Date) {
+                // Convert to milliseconds since epoch
                 java.sql.Date date = (java.sql.Date) value;
                 node.put(columnName, date.getTime());
             } else {
+                // For other types, convert to string
                 node.put(columnName, value.toString());
             }
         }
@@ -251,11 +198,20 @@ public class CdcConsumerService {
         logger.debug("Enhanced node with {} columns from PostgreSQL", data.size());
     }
 
+    /**
+     * Check if a field exists in a JsonNode with case-insensitive matching
+     *
+     * @param node The JsonNode to check
+     * @param fieldName The field name to look for (case-insensitive)
+     * @return true if the field exists, false otherwise
+     */
     private boolean hasFieldCaseInsensitive(JsonNode node, String fieldName) {
+        // Case 1: Exact match
         if (node.has(fieldName)) {
             return true;
         }
 
+        // Case 2: Case-insensitive match
         Iterator<String> fieldNames = node.fieldNames();
         while (fieldNames.hasNext()) {
             String name = fieldNames.next();
@@ -267,6 +223,9 @@ public class CdcConsumerService {
         return false;
     }
 
+    /**
+     * Extract table name from Debezium source metadata if available.
+     */
     private String extractTableNameFromEventSource(JsonNode rootNode) {
         try {
             if (rootNode != null && rootNode.has("payload") &&
@@ -284,6 +243,9 @@ public class CdcConsumerService {
         return null;
     }
 
+    /**
+     * Parse CDC event from JSON.
+     */
     private CdcEvent parseEvent(JsonNode rootNode, String topic, String tableName) {
         if (rootNode == null || !rootNode.has("payload")) {
             logger.warn("Invalid CDC event format - missing payload");
@@ -296,6 +258,7 @@ public class CdcConsumerService {
         JsonNode afterNode = payloadNode.has("after") ? payloadNode.get("after") : null;
         JsonNode sourceNode = payloadNode.has("source") ? payloadNode.get("source") : null;
 
+        // Double-check table name from source if available
         if (sourceNode != null && sourceNode.has("table")) {
             String sourceTable = sourceNode.get("table").asText();
             if (sourceTable != null && !sourceTable.isEmpty()) {
@@ -311,6 +274,10 @@ public class CdcConsumerService {
         return new CdcEvent(topic, tableName, operation, beforeNode, afterNode, sourceNode);
     }
 
+    /**
+     * Process CDC event based on operation type.
+     * Handles insert, update, delete, and read (snapshot) operations.
+     */
     private void processEvent(CdcEvent event, Map<String, FieldTypeInfo> fieldTypeMap) {
         try {
             if (event.isInsert()) {
@@ -338,7 +305,6 @@ public class CdcConsumerService {
             }
         } catch (Exception e) {
             logger.error("Error processing CDC event: {}", e.getMessage(), e);
-            throw e; // Re-throw to trigger retry logic
         }
     }
 }
