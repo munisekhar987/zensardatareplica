@@ -56,11 +56,32 @@ public class FieldTypeInfo {
     }
 
     /**
-     * Check if this field is a timestamp type
+     * Check if this field is a timestamp type (handles all Debezium timestamp variants)
      * @return true if field is a timestamp
      */
     public boolean isTimestamp() {
-        return typeName != null && typeName.equals("io.debezium.time.Timestamp");
+        return typeName != null && (
+                typeName.equals("io.debezium.time.Timestamp") ||           // milliseconds since epoch
+                        typeName.equals("io.debezium.time.MicroTimestamp") ||      // microseconds since epoch
+                        typeName.equals("io.debezium.time.NanoTimestamp") ||       // nanoseconds since epoch
+                        typeName.equals("io.debezium.time.ZonedTimestamp")         // zoned timestamp
+        );
+    }
+
+    /**
+     * Check if this field is a micro timestamp type
+     * @return true if field is a micro timestamp
+     */
+    public boolean isMicroTimestamp() {
+        return typeName != null && typeName.equals("io.debezium.time.MicroTimestamp");
+    }
+
+    /**
+     * Check if this field is a nano timestamp type
+     * @return true if field is a nano timestamp
+     */
+    public boolean isNanoTimestamp() {
+        return typeName != null && typeName.equals("io.debezium.time.NanoTimestamp");
     }
 
     /**
@@ -70,6 +91,15 @@ public class FieldTypeInfo {
     public boolean isDecimal() {
         return "bytes".equals(type) && typeName != null &&
                 typeName.equals("org.apache.kafka.connect.data.Decimal");
+    }
+
+    /**
+     * Check if this field is a variable scale decimal type
+     * @return true if field is a variable scale decimal
+     */
+    public boolean isVariableScaleDecimal() {
+        return "struct".equals(type) && typeName != null &&
+                typeName.equals("io.debezium.data.VariableScaleDecimal");
     }
 
     @Override
