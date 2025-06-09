@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Worker Pool Service with 16 workers that:
+ * Worker Pool Service with configurable workers that:
  * 1. Create SQL statements using existing logic
  * 2. Batch statements together
  * 3. Execute batches on connection pool
@@ -33,7 +33,8 @@ import java.util.concurrent.atomic.AtomicLong;
 public class WorkerPoolService {
     private static final Logger logger = LoggerFactory.getLogger(WorkerPoolService.class);
 
-    private static final int TOTAL_WORKERS = 16;
+    @Value("${cdc.enhanced.worker.thread-count:16}")
+    private int totalWorkers;
 
     @Value("${cdc.enhanced.worker.queue-size:5000}")
     private int workerQueueSize;
@@ -54,49 +55,57 @@ public class WorkerPoolService {
     private ExecutorService workerExecutor;
 
     // Queues for each worker
-    private final List<BlockingQueue<EnhancedCdcEvent>> workerQueues = new ArrayList<>();
+    private List<BlockingQueue<EnhancedCdcEvent>> workerQueues;
 
     // Track if each worker is currently executing (prevents overlapping batches)
-    private final AtomicBoolean[] workerExecuting = new AtomicBoolean[TOTAL_WORKERS];
+    private AtomicBoolean[] workerExecuting;
 
-    // Metrics
+    // Enhanced Metrics
     private final AtomicLong totalEventsReceived = new AtomicLong(0);
     private final AtomicLong totalBatchesExecuted = new AtomicLong(0);
     private final AtomicLong totalStatementsExecuted = new AtomicLong(0);
     private final AtomicLong totalFailedStatements = new AtomicLong(0);
+    private final AtomicLong workerBatchCounter = new AtomicLong(0);
+    private volatile long lastProgressLog = System.currentTimeMillis();
 
     @PostConstruct
     public void init() {
-        logger.info("Initializing Worker Pool Service with {} workers", TOTAL_WORKERS);
+        logger.info("Initializing Worker Pool Service");
+        logger.info("Workers: {}, Queue Size: {}, Batch Size: {}, Timeout: {}ms",
+                totalWorkers, workerQueueSize, batchSize, batchTimeoutMs);
+
+        // Initialize collections based on configured worker count
+        workerQueues = new ArrayList<>(totalWorkers);
+        workerExecuting = new AtomicBoolean[totalWorkers];
 
         // Initialize queues and execution flags for each worker
-        for (int i = 0; i < TOTAL_WORKERS; i++) {
+        for (int i = 0; i < totalWorkers; i++) {
             workerQueues.add(new LinkedBlockingQueue<>(workerQueueSize));
             workerExecuting[i] = new AtomicBoolean(false);
         }
 
         // Create thread pool
-        workerExecutor = Executors.newFixedThreadPool(TOTAL_WORKERS, r -> {
+        workerExecutor = Executors.newFixedThreadPool(totalWorkers, r -> {
             Thread t = new Thread(r, "Enhanced-Worker-" + Thread.currentThread().getId());
             t.setDaemon(true);
             return t;
         });
 
         // Start worker threads
-        for (int i = 0; i < TOTAL_WORKERS; i++) {
+        for (int i = 0; i < totalWorkers; i++) {
             final int workerId = i;
             workerExecutor.submit(() -> runWorker(workerId));
         }
 
-        logger.info("Worker Pool Service initialized successfully");
+        logger.info("Worker Pool Service started with {} workers", totalWorkers);
     }
 
     /**
      * Submit event to specific worker
      */
     public boolean submitToWorker(int workerId, EnhancedCdcEvent event) {
-        if (workerId < 0 || workerId >= TOTAL_WORKERS) {
-            logger.error("Invalid worker ID: {}", workerId);
+        if (workerId < 0 || workerId >= totalWorkers) {
+            logger.error("Invalid worker ID: {} (valid range: 0-{})", workerId, totalWorkers - 1);
             return false;
         }
 
@@ -119,11 +128,12 @@ public class WorkerPoolService {
      * Main worker thread logic
      */
     private void runWorker(int workerId) {
-        logger.info("Starting worker thread {}", workerId);
+        logger.info("Worker-{} started and ready for processing", workerId);
         BlockingQueue<EnhancedCdcEvent> queue = workerQueues.get(workerId);
 
         List<EnhancedCdcEvent> currentBatch = new ArrayList<>();
         long lastBatchTime = System.currentTimeMillis();
+        long workerEventsProcessed = 0;
 
         while (!Thread.currentThread().isInterrupted()) {
             try {
@@ -146,18 +156,30 @@ public class WorkerPoolService {
 
                 if (currentBatch.size() >= batchSize) {
                     shouldProcessBatch = true;
-                    logger.debug("Worker {} processing batch due to size: {}", workerId, currentBatch.size());
+                    logger.debug("Worker-{} processing batch due to size: {}", workerId, currentBatch.size());
                 } else if (!currentBatch.isEmpty() && (currentTime - lastBatchTime) >= batchTimeoutMs) {
                     shouldProcessBatch = true;
-                    logger.debug("Worker {} processing batch due to timeout: {} events", workerId, currentBatch.size());
+                    logger.debug("Worker-{} processing batch due to timeout: {} events", workerId, currentBatch.size());
                 }
 
                 if (shouldProcessBatch) {
+                    long batchNum = workerBatchCounter.incrementAndGet();
+
+                    // Only log INFO for every 25th batch or large batches
+                    if (batchNum % 25 == 0 || currentBatch.size() > 50) {
+                        logger.info("WORKER-{}: Processing batch #{} with {} events (total processed: {})",
+                                workerId, batchNum, currentBatch.size(), workerEventsProcessed);
+                    } else {
+                        logger.debug("Worker-{} processing batch #{} with {} events",
+                                workerId, batchNum, currentBatch.size());
+                    }
+
                     // Set executing flag to prevent overlap
                     workerExecuting[workerId].set(true);
 
                     try {
                         processBatch(workerId, new ArrayList<>(currentBatch));
+                        workerEventsProcessed += currentBatch.size();
                     } finally {
                         // Always clear executing flag
                         workerExecuting[workerId].set(false);
@@ -169,7 +191,7 @@ public class WorkerPoolService {
 
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                logger.info("Worker thread {} interrupted", workerId);
+                logger.info("Worker-{} thread interrupted", workerId);
                 break;
             } catch (Exception e) {
                 logger.error("Error in worker thread {}", workerId, e);
@@ -184,6 +206,7 @@ public class WorkerPoolService {
             try {
                 workerExecuting[workerId].set(true);
                 processBatch(workerId, currentBatch);
+                workerEventsProcessed += currentBatch.size();
             } catch (Exception e) {
                 logger.error("Error processing final batch in worker {}", workerId, e);
             } finally {
@@ -191,7 +214,7 @@ public class WorkerPoolService {
             }
         }
 
-        logger.info("Worker thread {} stopped", workerId);
+        logger.info("Worker-{} stopped (processed {} events total)", workerId, workerEventsProcessed);
     }
 
     /**
@@ -202,8 +225,6 @@ public class WorkerPoolService {
         if (batch.isEmpty()) {
             return;
         }
-
-        logger.debug("Worker {} processing batch of {} events", workerId, batch.size());
 
         // Step 1: Generate SQL statements for all events
         List<PreparedSqlStatement> statements = new ArrayList<>();
@@ -246,14 +267,7 @@ public class WorkerPoolService {
             connection = dataSource.getConnection();
             connection.setAutoCommit(false);
 
-            logger.debug("Worker {} executing batch of {} statements", workerId, statements.size());
-
-            // Sort statements by execution priority (DELETE, UPDATE, INSERT/MERGE)
-            statements.sort((s1, s2) -> {
-                int priority1 = getExecutionPriority(s1.getType());
-                int priority2 = getExecutionPriority(s2.getType());
-                return Integer.compare(priority1, priority2);
-            });
+            logger.debug("Worker-{} executing batch of {} statements", workerId, statements.size());
 
             // Execute each statement in the batch
             int successCount = 0;
@@ -266,7 +280,8 @@ public class WorkerPoolService {
                         logger.warn("Statement execution returned false: {}", stmt);
                     }
                 } catch (SQLException e) {
-                    logger.error("Error executing statement: {} - {}", stmt, e.getMessage());
+                    logger.warn("SQL execution failed for {}: {} - {}",
+                            stmt.getType(), stmt.getTableName(), e.getMessage());
                     totalFailedStatements.incrementAndGet();
 
                     // For critical errors, abort the entire batch
@@ -283,16 +298,37 @@ public class WorkerPoolService {
                 transactionSuccessful = true;
                 totalBatchesExecuted.incrementAndGet();
                 totalStatementsExecuted.addAndGet(successCount);
-                logger.debug("Worker {} successfully committed batch of {} statements", workerId, successCount);
+
+                // Log progress every 2 minutes or every 100 batches
+                long now = System.currentTimeMillis();
+                long batchCount = totalBatchesExecuted.get();
+                if (now - lastProgressLog > 120000 || batchCount % 100 == 0) {
+                    logger.info("WORKER PROGRESS: {} batches completed, {} statements executed, {} events processed, {} failed",
+                            batchCount, totalStatementsExecuted.get(), totalEventsReceived.get(), totalFailedStatements.get());
+                    lastProgressLog = now;
+                } else {
+                    logger.debug("Worker-{} committed batch: {} statements", workerId, successCount);
+                }
             } else {
                 connection.rollback();
-                logger.warn("Worker {} rolled back batch due to failures. Success: {}, Total: {}",
+                logger.warn("Worker-{} rolled back batch due to failures. Success: {}, Total: {}",
                         workerId, successCount, statements.size());
                 totalFailedStatements.addAndGet(statements.size() - successCount);
             }
 
         } catch (SQLException e) {
-            logger.error("Error in batch execution for worker {}: {}", workerId, e.getMessage(), e);
+            logger.error("BATCH FAILED - Worker-{}: {} ({} statements lost)",
+                    workerId, e.getMessage(), statements.size());
+
+            // Log the first few failed statements for debugging
+            if (statements.size() <= 5) {
+                for (PreparedSqlStatement stmt : statements) {
+                    logger.warn("Failed statement: {} on table {}", stmt.getType(), stmt.getTableName());
+                }
+            } else {
+                logger.warn("Failed batch contained {} statements for tables: {}",
+                        statements.size(), getUniqueTableNames(statements));
+            }
 
             // Rollback transaction
             if (connection != null) {
@@ -340,12 +376,12 @@ public class WorkerPoolService {
             // Execute statement
             int rowsAffected = ps.executeUpdate();
 
-            logger.debug("Statement executed: {} (rows affected: {})", stmt.getType(), rowsAffected);
+            logger.trace("Statement executed: {} (rows affected: {})", stmt.getType(), rowsAffected);
 
             return true;
 
         } catch (SQLException e) {
-            logger.error("SQL execution error for {}: {}", stmt.getType(), e.getMessage());
+            logger.debug("SQL execution error for {}: {}", stmt.getType(), e.getMessage());
             throw e;
         }
     }
@@ -403,22 +439,6 @@ public class WorkerPoolService {
         }
     }
 
-    /**
-     * Get execution priority for statement ordering
-     */
-    private int getExecutionPriority(PreparedSqlStatement.StatementType type) {
-        switch (type) {
-            case DELETE:
-                return 1;
-            case UPDATE:
-                return 2;
-            case INSERT:
-            case MERGE:
-                return 3;
-            default:
-                return 999;
-        }
-    }
 
     /**
      * Check if an SQL exception is critical and should stop batch processing
@@ -442,11 +462,22 @@ public class WorkerPoolService {
     }
 
     /**
+     * Get unique table names from a list of statements
+     */
+    private Set<String> getUniqueTableNames(List<PreparedSqlStatement> statements) {
+        Set<String> tableNames = new HashSet<>();
+        for (PreparedSqlStatement stmt : statements) {
+            tableNames.add(stmt.getTableName());
+        }
+        return tableNames;
+    }
+
+    /**
      * Get current metrics
      */
     public Map<String, Object> getMetrics() {
         Map<String, Object> metrics = new HashMap<>();
-        metrics.put("totalWorkers", TOTAL_WORKERS);
+        metrics.put("totalWorkers", totalWorkers);
         metrics.put("totalEventsReceived", totalEventsReceived.get());
         metrics.put("totalBatchesExecuted", totalBatchesExecuted.get());
         metrics.put("totalStatementsExecuted", totalStatementsExecuted.get());
@@ -461,7 +492,7 @@ public class WorkerPoolService {
 
         // Active workers
         long activeWorkers = 0;
-        for (int i = 0; i < TOTAL_WORKERS; i++) {
+        for (int i = 0; i < totalWorkers; i++) {
             if (workerExecuting[i].get()) {
                 activeWorkers++;
             }
@@ -481,6 +512,8 @@ public class WorkerPoolService {
                 if (!workerExecutor.awaitTermination(60, TimeUnit.SECONDS)) {
                     logger.warn("Worker pool did not terminate gracefully, forcing shutdown");
                     workerExecutor.shutdownNow();
+                } else {
+                    logger.info("All worker threads terminated successfully");
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();

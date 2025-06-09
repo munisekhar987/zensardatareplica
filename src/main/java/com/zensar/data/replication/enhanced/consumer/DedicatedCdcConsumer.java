@@ -19,6 +19,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
@@ -48,6 +49,12 @@ public class DedicatedCdcConsumer {
     @Value("${cdc.enhanced.consumer.poll-timeout-ms:1000}")
     private long pollTimeoutMs;
 
+    @Value("${cdc.enhanced.hasher.thread-count:4}")
+    private int hasherThreadCount;
+
+    @Value("${cdc.enhanced.worker.thread-count:16}")
+    private int workerThreadCount;
+
     @Autowired
     private ObjectMapper objectMapper;
 
@@ -70,18 +77,27 @@ public class DedicatedCdcConsumer {
     private final AtomicBoolean running = new AtomicBoolean(false);
     private Thread consumerThread;
 
-    // Metrics
+    // Enhanced Metrics
     private final AtomicLong totalBatchesProcessed = new AtomicLong(0);
     private final AtomicLong totalEventsProcessed = new AtomicLong(0);
     private final AtomicLong totalFailedBatches = new AtomicLong(0);
+    private final AtomicLong batchCounter = new AtomicLong(0);
+    private volatile long lastProgressLog = System.currentTimeMillis();
 
     @PostConstruct
     public void init() {
-        logger.info("Initializing Dedicated CDC Consumer");
-        logger.info("Topic: {}, Consumer Group: {}, Batch Size: {}",
-                dedicatedTopic, consumerGroupId, batchSize);
+        logger.info("=== ENHANCED CDC CONSUMER STARTING ===");
+        logger.info("Topic: {}", dedicatedTopic);
+        logger.info("Consumer Group: {}", consumerGroupId);
+        logger.info("Batch Size: {}", batchSize);
+        logger.info("Poll Timeout: {}ms", pollTimeoutMs);
+        logger.info("Architecture: 1 Consumer → {} Hashers → {} Workers",
+                hasherThreadCount, workerThreadCount);
+        logger.info("========================================");
 
         startConsumer();
+
+        logger.info("=== CDC CONSUMER READY FOR PROCESSING ===");
     }
 
     private void startConsumer() {
@@ -97,12 +113,12 @@ public class DedicatedCdcConsumer {
             consumerThread.setDaemon(false);
             consumerThread.start();
 
-            logger.info("Dedicated CDC Consumer started for topic: {}", dedicatedTopic);
+            logger.info("CDC Consumer thread started for topic: {}", dedicatedTopic);
         }
     }
 
     private void consumeLoop() {
-        logger.info("Starting dedicated CDC consumer loop for topic: {}", dedicatedTopic);
+        logger.info("Starting CDC consumer loop for topic: {}", dedicatedTopic);
 
         List<EnhancedCdcEvent> currentBatch = new ArrayList<>();
         Map<TopicPartition, Long> batchOffsets = new HashMap<>();
@@ -138,12 +154,21 @@ public class DedicatedCdcConsumer {
                 }
 
                 if (currentBatch.size() >= batchSize) {
-                    logger.debug("Processing full batch of {} events", currentBatch.size());
+                    long batchNum = batchCounter.incrementAndGet();
+
+                    // Log every 10th batch or large batches
+                    if (batchNum % 10 == 0 || currentBatch.size() > 500) {
+                        logger.info("CONSUMER: Processed {} batches, current: {} events, total processed: {}",
+                                batchNum, currentBatch.size(), totalEventsProcessed.get());
+                    } else {
+                        logger.debug("Processing batch #{} of {} events", batchNum, currentBatch.size());
+                    }
+
                     boolean success = processBatch(currentBatch, batchOffsets);
                     if (success) {
                         commitOffsets(batchOffsets);
                     } else {
-                        logger.error("Batch processing failed, will not commit offsets");
+                        logger.error("CONSUMER: Batch processing failed, will not commit offsets");
                         totalFailedBatches.incrementAndGet();
                     }
                     currentBatch.clear();
@@ -176,7 +201,7 @@ public class DedicatedCdcConsumer {
             }
         }
 
-        logger.info("Dedicated CDC consumer loop stopped");
+        logger.info("CDC consumer loop stopped");
     }
 
     private EnhancedCdcEvent parseRecord(ConsumerRecord<String, String> record) {
@@ -223,15 +248,30 @@ public class DedicatedCdcConsumer {
             return true;
         }
 
-        logger.info("Processing batch of {} events", batch.size());
         totalBatchesProcessed.incrementAndGet();
+
+        // Log large batches
+        if (batch.size() > 100) {
+            logger.info("CONSUMER: Processing large batch: {} events", batch.size());
+        } else {
+            logger.debug("Submitting batch of {} events to hasher service", batch.size());
+        }
 
         try {
             boolean success = hasherService.submitBatch(batch);
 
             if (success) {
                 totalEventsProcessed.addAndGet(batch.size());
-                logger.debug("Successfully submitted batch to hasher service");
+
+                // Log progress every 2 minutes or every 50 batches
+                long now = System.currentTimeMillis();
+                long batchCount = totalBatchesProcessed.get();
+                if (now - lastProgressLog > 120000 || batchCount % 50 == 0) {
+                    logger.info("CONSUMER PROGRESS: {} batches submitted, {} events processed, {} failed batches",
+                            batchCount, totalEventsProcessed.get(), totalFailedBatches.get());
+                    lastProgressLog = now;
+                }
+
                 return true;
             } else {
                 logger.error("Failed to submit batch to hasher service");
@@ -356,6 +396,17 @@ public class DedicatedCdcConsumer {
         return false;
     }
 
+    @Scheduled(fixedRate = 300000) // Every 5 minutes
+    public void logHealthStatus() {
+        if (running.get()) {
+            logger.info("CDC HEALTH CHECK - Batches: {}, Events: {}, Failed: {}, Running: {}",
+                    totalBatchesProcessed.get(),
+                    totalEventsProcessed.get(),
+                    totalFailedBatches.get(),
+                    running.get());
+        }
+    }
+
     public Map<String, Object> getMetrics() {
         Map<String, Object> metrics = new HashMap<>();
         metrics.put("running", running.get());
@@ -370,7 +421,7 @@ public class DedicatedCdcConsumer {
 
     @PreDestroy
     public void shutdown() {
-        logger.info("Shutting down Dedicated CDC Consumer");
+        logger.info("Shutting down CDC Consumer");
 
         running.set(false);
 
@@ -378,20 +429,23 @@ public class DedicatedCdcConsumer {
             try {
                 consumerThread.interrupt();
                 consumerThread.join(30000);
+                logger.info("Consumer thread stopped successfully");
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+                logger.warn("Consumer thread shutdown interrupted");
             }
         }
 
         if (consumer != null) {
             try {
                 consumer.close(Duration.ofSeconds(10));
+                logger.info("Kafka consumer closed successfully");
             } catch (Exception e) {
                 logger.warn("Error closing consumer", e);
             }
         }
 
-        logger.info("Dedicated CDC Consumer shutdown complete");
+        logger.info("=== CDC CONSUMER SHUTDOWN COMPLETE ===");
     }
 
     public static class EnhancedCdcEvent {

@@ -50,7 +50,8 @@ public class SqlStatementGenerator {
             }
 
         } catch (Exception e) {
-            logger.error("Error generating SQL statement: {}", e.getMessage(), e);
+            logger.error("Error generating SQL statement for table {}: {}",
+                    event.getTableName(), e.getMessage(), e);
             return null;
         }
     }

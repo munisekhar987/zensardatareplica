@@ -1,0 +1,190 @@
+PostgreSQL Setup Scripts
+1. Create DELIVERY_BUILDING Table in PostgreSQL
+Connect to PostgreSQL in DBeaver and run this script:
+sql-- Create DELIVERY_BUILDING table matching Oracle structure
+CREATE TABLE delivery_building (
+    id BIGSERIAL PRIMARY KEY,
+    building_name VARCHAR(255),
+    address VARCHAR(500),
+    city VARCHAR(100),
+    state VARCHAR(50),
+    zip_code VARCHAR(20),
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(20) DEFAULT 'ACTIVE'
+);
+
+-- Create trigger function for updating updated_date
+CREATE OR REPLACE FUNCTION update_delivery_building_timestamp()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_date = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create trigger for auto-updating timestamp
+CREATE TRIGGER delivery_building_update_trigger
+    BEFORE UPDATE ON delivery_building
+    FOR EACH ROW
+    EXECUTE FUNCTION update_delivery_building_timestamp();
+
+-- Insert sample data
+INSERT INTO delivery_building (building_name, address, city, state, zip_code) VALUES
+('Main Distribution Center', '123 Main St', 'Chicago', 'IL', '60601'),
+('North Warehouse', '456 North Ave', 'Milwaukee', 'WI', '53201'),
+('South Hub', '789 South Blvd', 'Indianapolis', 'IN', '46201');
+
+-- Verify data
+SELECT * FROM delivery_building;
+
+-- Create indexes for better performance
+CREATE INDEX idx_delivery_building_status ON delivery_building(status);
+CREATE INDEX idx_delivery_building_city ON delivery_building(city);
+2. Configure WAL to Logical Replication
+Method 1: Update Docker Compose (Recommended)
+Update your PostgreSQL service in docker-compose.yml:
+yamlpostgres-db:
+  image: postgres:15
+  container_name: postgres-local
+  ports:
+    - "5432:5432"
+  environment:
+    POSTGRES_DB: psqldev
+    POSTGRES_USER: psqldev
+    POSTGRES_PASSWORD: We1c0me123
+    POSTGRES_INITDB_ARGS: "--encoding=UTF-8"
+  volumes:
+    - postgres-data:/var/lib/postgresql/data
+    - ./init-scripts/postgres:/docker-entrypoint-initdb.d
+  command: >
+    postgres
+    -c wal_level=logical
+    -c max_replication_slots=10
+    -c max_wal_senders=10
+    -c shared_preload_libraries=pgoutput
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U psqldev -d psqldev"]
+    interval: 30s
+    timeout: 10s
+    retries: 5
+Method 2: Manual Configuration (If container is already running)
+
+Connect to PostgreSQL container:
+
+bashdocker exec -it postgres-local bash
+
+Edit postgresql.conf:
+
+bash# Find the config file location
+su - postgres
+psql -c "SHOW config_file;"
+
+# Edit the config file
+nano /var/lib/postgresql/data/postgresql.conf
+
+Add/Update these settings:
+
+properties# WAL Configuration for CDC
+wal_level = logical
+max_replication_slots = 10
+max_wal_senders = 10
+shared_preload_libraries = 'pgoutput'
+
+# Optional: For better performance
+checkpoint_completion_target = 0.9
+wal_buffers = 16MB
+
+Restart PostgreSQL:
+
+bash# Exit container first
+exit
+
+# Restart the container
+docker restart postgres-local
+Method 3: Using SQL Commands (Runtime changes)
+Connect to PostgreSQL and run:
+sql-- Check current WAL level
+SHOW wal_level;
+
+-- These require restart to take effect
+ALTER SYSTEM SET wal_level = 'logical';
+ALTER SYSTEM SET max_replication_slots = 10;
+ALTER SYSTEM SET max_wal_senders = 10;
+
+-- Reload configuration
+SELECT pg_reload_conf();
+
+-- Check if restart is needed
+SELECT name, setting, pending_restart
+FROM pg_settings
+WHERE name IN ('wal_level', 'max_replication_slots', 'max_wal_senders');
+If pending_restart is true, restart the container:
+bashdocker restart postgres-local
+3. Verify WAL Configuration
+After restart, connect to PostgreSQL and verify:
+sql-- Check WAL level (should be 'logical')
+SHOW wal_level;
+
+-- Check replication settings
+SHOW max_replication_slots;
+SHOW max_wal_senders;
+
+-- Check shared libraries
+SHOW shared_preload_libraries;
+
+-- Check if logical replication is working
+SELECT slot_name, plugin, slot_type, database, active
+FROM pg_replication_slots;
+4. Create Replication Slot (For Debezium)
+sql-- Create a replication slot for CDC
+SELECT pg_create_logical_replication_slot('debezium_slot', 'pgoutput');
+
+-- Verify slot creation
+SELECT slot_name, plugin, slot_type, database, active
+FROM pg_replication_slots
+WHERE slot_name = 'debezium_slot';
+5. Grant Replication Permissions
+sql-- Grant replication permission to psqldev user
+ALTER USER psqldev REPLICATION;
+
+-- Grant necessary table permissions
+GRANT SELECT ON delivery_building TO psqldev;
+
+-- For publication (if using logical replication)
+CREATE PUBLICATION debezium_publication FOR TABLE delivery_building;
+
+-- Verify publication
+SELECT pubname, pubtable
+FROM pg_publication_tables
+WHERE pubname = 'debezium_publication';
+6. Test Configuration
+sql-- Test that everything is working
+INSERT INTO delivery_building (building_name, address, city, state, zip_code)
+VALUES ('Test Building', '999 Test St', 'Test City', 'TX', '99999');
+
+-- Check the new record
+SELECT * FROM delivery_building WHERE building_name = 'Test Building';
+
+-- Check WAL activity
+SELECT pg_current_wal_lsn();
+Quick Setup Commands Summary
+If you want to quickly set everything up:
+bash# 1. Stop and update docker-compose
+docker-compose down
+
+# 2. Update docker-compose.yml with the new postgres configuration
+
+# 3. Start with new configuration
+docker-compose up -d postgres-db
+
+# 4. Wait for startup, then connect with DBeaver and run the table creation script
+
+# 5. Verify WAL configuration with the verification queries above
+Troubleshooting
+Problem: WAL level shows 'replica' instead of 'logical'
+Solution: Make sure to restart the PostgreSQL container after configuration changes
+Problem: Permission denied for replication
+Solution: Run ALTER USER psqldev REPLICATION; as superuser
+Problem: Replication slot creation fails
+Solution: Ensure WAL level is 'logical' and max_replication_slots > 0
