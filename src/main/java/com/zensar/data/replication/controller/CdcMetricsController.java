@@ -1,4 +1,4 @@
-package com.zensar.data.replication.controller;
+package com.zensar.data.replication.enhanced.controller;
 
 import com.zensar.data.replication.enhanced.consumer.DedicatedCdcConsumer;
 import com.zensar.data.replication.enhanced.pool.PrimaryKeyHasherService;
@@ -271,9 +271,42 @@ public class CdcMetricsController {
     }
 
     /**
-     * Get processing rates and throughput metrics
+     * Get TPS (Transactions Per Second) metrics
      */
-    @GetMapping("/throughput")
+    @GetMapping("/tps")
+    public ResponseEntity<Map<String, Object>> getTpsMetrics() {
+        try {
+            Map<String, Object> consumerMetrics = cdcConsumer.getMetrics();
+            Map<String, Object> workerMetrics = workerPoolService.getMetrics();
+
+            Map<String, Object> tpsData = new HashMap<>();
+
+            // Consumer TPS (events received and committed)
+            double consumerTps = (Double) consumerMetrics.getOrDefault("averageTps", 0.0);
+            long totalEvents = (Long) consumerMetrics.getOrDefault("totalEvents", 0L);
+            double runtimeSeconds = (Double) consumerMetrics.getOrDefault("runtimeSeconds", 0.0);
+
+            // Worker TPS (SQL statements executed)
+            long totalStatements = (Long) workerMetrics.get("totalStatementsExecuted");
+            double workerTps = runtimeSeconds > 0 ? totalStatements / runtimeSeconds : 0.0;
+
+            tpsData.put("timestamp", LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+            tpsData.put("consumerTps", String.format("%.2f events/sec", consumerTps));
+            tpsData.put("workerTps", String.format("%.2f statements/sec", workerTps));
+            tpsData.put("totalEventsProcessed", totalEvents);
+            tpsData.put("totalStatementsExecuted", totalStatements);
+            tpsData.put("runtimeSeconds", String.format("%.1f seconds", runtimeSeconds));
+            tpsData.put("efficiency", totalEvents > 0 ? String.format("%.2f%%", (double) totalStatements / totalEvents * 100) : "0.00%");
+
+            return ResponseEntity.ok(tpsData);
+
+        } catch (Exception e) {
+            logger.error("Error retrieving TPS metrics", e);
+            return ResponseEntity.internalServerError().body(
+                    Map.of("error", "Failed to retrieve TPS metrics", "message", e.getMessage())
+            );
+        }
+    }
     public ResponseEntity<Map<String, Object>> getThroughputMetrics() {
         try {
             Map<String, Object> consumerMetrics = cdcConsumer.getMetrics();
