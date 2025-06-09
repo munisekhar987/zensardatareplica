@@ -1,5 +1,6 @@
 package com.zensar.data.replication.enhanced.worker;
 
+import com.zensar.data.replication.enhanced.consumer.DedicatedCdcConsumer;
 import com.zensar.data.replication.enhanced.consumer.DedicatedCdcConsumer.EnhancedCdcEvent;
 import com.zensar.data.replication.enhanced.service.SqlStatementGenerator;
 import com.zensar.data.replication.enhanced.service.SqlStatementGenerator.PreparedSqlStatement;
@@ -7,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,11 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Worker Pool Service with configurable workers that:
- * 1. Create SQL statements using existing logic
- * 2. Batch statements together
- * 3. Execute batches on connection pool
- * 4. Ensure sequential execution per worker (no overlap)
+ * Simplified Worker Pool Service with simple count-based completion tracking.
  */
 @Service
 public class WorkerPoolService {
@@ -51,11 +49,15 @@ public class WorkerPoolService {
     @Autowired
     private DataSource dataSource;
 
+    @Autowired
+    @Lazy
+    private DedicatedCdcConsumer cdcConsumer;
+
     // Thread pool for workers
     private ExecutorService workerExecutor;
 
     // Queues for each worker
-    private List<BlockingQueue<EnhancedCdcEvent>> workerQueues;
+    private List<BlockingQueue<EventWithBatchId>> workerQueues;
 
     // Track if each worker is currently executing (prevents overlapping batches)
     private AtomicBoolean[] workerExecuting;
@@ -70,7 +72,7 @@ public class WorkerPoolService {
 
     @PostConstruct
     public void init() {
-        logger.info("Initializing Worker Pool Service");
+        logger.info("Initializing Simplified Worker Pool Service");
         logger.info("Workers: {}, Queue Size: {}, Batch Size: {}, Timeout: {}ms",
                 totalWorkers, workerQueueSize, batchSize, batchTimeoutMs);
 
@@ -86,7 +88,7 @@ public class WorkerPoolService {
 
         // Create thread pool
         workerExecutor = Executors.newFixedThreadPool(totalWorkers, r -> {
-            Thread t = new Thread(r, "Enhanced-Worker-" + Thread.currentThread().getId());
+            Thread t = new Thread(r, "Simplified-Worker-" + Thread.currentThread().getId());
             t.setDaemon(true);
             return t;
         });
@@ -97,41 +99,52 @@ public class WorkerPoolService {
             workerExecutor.submit(() -> runWorker(workerId));
         }
 
-        logger.info("Worker Pool Service started with {} workers", totalWorkers);
+        logger.info("Simplified Worker Pool Service started with {} workers", totalWorkers);
     }
 
     /**
-     * Submit event to specific worker
+     * Submit event to specific worker with batch ID for tracking
      */
-    public boolean submitToWorker(int workerId, EnhancedCdcEvent event) {
+    public boolean submitToWorker(int workerId, EnhancedCdcEvent event, String batchId) {
         if (workerId < 0 || workerId >= totalWorkers) {
             logger.error("Invalid worker ID: {} (valid range: 0-{})", workerId, totalWorkers - 1);
+            // Notify consumer of failure with details
+            cdcConsumer.onStatementCompleted(batchId, false, "Invalid worker ID",
+                    event.getEvent().getTableName(), event.getEvent().getOperation());
             return false;
         }
 
         try {
-            boolean submitted = workerQueues.get(workerId).offer(event, 100, TimeUnit.MILLISECONDS);
+            EventWithBatchId eventWithBatchId = new EventWithBatchId(event, batchId);
+            boolean submitted = workerQueues.get(workerId).offer(eventWithBatchId, 100, TimeUnit.MILLISECONDS);
+
             if (submitted) {
                 totalEventsReceived.incrementAndGet();
             } else {
                 logger.warn("Failed to submit event to worker {} (queue full)", workerId);
+                // Notify consumer of failure with details
+                cdcConsumer.onStatementCompleted(batchId, false, "Worker queue full",
+                        event.getEvent().getTableName(), event.getEvent().getOperation());
             }
             return submitted;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             logger.error("Interrupted while submitting to worker {}", workerId, e);
+            // Notify consumer of failure with details
+            cdcConsumer.onStatementCompleted(batchId, false, "Thread interrupted: " + e.getMessage(),
+                    event.getEvent().getTableName(), event.getEvent().getOperation());
             return false;
         }
     }
 
     /**
-     * Main worker thread logic
+     * Main worker thread logic with simple completion tracking
      */
     private void runWorker(int workerId) {
         logger.info("Worker-{} started and ready for processing", workerId);
-        BlockingQueue<EnhancedCdcEvent> queue = workerQueues.get(workerId);
+        BlockingQueue<EventWithBatchId> queue = workerQueues.get(workerId);
 
-        List<EnhancedCdcEvent> currentBatch = new ArrayList<>();
+        List<EventWithBatchId> currentBatch = new ArrayList<>();
         long lastBatchTime = System.currentTimeMillis();
         long workerEventsProcessed = 0;
 
@@ -144,10 +157,10 @@ public class WorkerPoolService {
                 }
 
                 // Try to get an event
-                EnhancedCdcEvent event = queue.poll(100, TimeUnit.MILLISECONDS);
+                EventWithBatchId eventWithBatchId = queue.poll(100, TimeUnit.MILLISECONDS);
 
-                if (event != null) {
-                    currentBatch.add(event);
+                if (eventWithBatchId != null) {
+                    currentBatch.add(eventWithBatchId);
                 }
 
                 // Check if we should process the batch
@@ -195,6 +208,13 @@ public class WorkerPoolService {
                 break;
             } catch (Exception e) {
                 logger.error("Error in worker thread {}", workerId, e);
+                // Notify consumer of failures with details
+                for (EventWithBatchId eventWithBatchId : currentBatch) {
+                    cdcConsumer.onStatementCompleted(eventWithBatchId.getBatchId(), false,
+                            "Worker thread error: " + e.getMessage(),
+                            eventWithBatchId.getEvent().getEvent().getTableName(),
+                            eventWithBatchId.getEvent().getEvent().getOperation());
+                }
                 currentBatch.clear();
                 lastBatchTime = System.currentTimeMillis();
                 workerExecuting[workerId].set(false); // Ensure flag is cleared
@@ -209,6 +229,13 @@ public class WorkerPoolService {
                 workerEventsProcessed += currentBatch.size();
             } catch (Exception e) {
                 logger.error("Error processing final batch in worker {}", workerId, e);
+                // Notify consumer of failures with details
+                for (EventWithBatchId eventWithBatchId : currentBatch) {
+                    cdcConsumer.onStatementCompleted(eventWithBatchId.getBatchId(), false,
+                            "Final batch processing error: " + e.getMessage(),
+                            eventWithBatchId.getEvent().getEvent().getTableName(),
+                            eventWithBatchId.getEvent().getEvent().getOperation());
+                }
             } finally {
                 workerExecuting[workerId].set(false);
             }
@@ -221,28 +248,39 @@ public class WorkerPoolService {
      * Process a batch of events by creating and executing SQL statements
      */
     @Transactional
-    private void processBatch(int workerId, List<EnhancedCdcEvent> batch) {
+    private void processBatch(int workerId, List<EventWithBatchId> batch) {
         if (batch.isEmpty()) {
             return;
         }
 
         // Step 1: Generate SQL statements for all events
-        List<PreparedSqlStatement> statements = new ArrayList<>();
+        List<StatementWithBatchId> statements = new ArrayList<>();
 
-        for (EnhancedCdcEvent event : batch) {
+        for (EventWithBatchId eventWithBatchId : batch) {
             try {
+                EnhancedCdcEvent event = eventWithBatchId.getEvent();
                 PreparedSqlStatement statement = sqlStatementGenerator.generateStatement(
                         event.getEvent(), event.getFieldTypeMap());
 
                 if (statement != null) {
-                    statements.add(statement);
+                    statements.add(new StatementWithBatchId(statement, eventWithBatchId.getBatchId()));
                 } else {
                     logger.warn("Failed to generate statement for event: {} on table {}",
                             event.getEvent().getOperation(), event.getEvent().getTableName());
+                    // Notify consumer of failure with details
+                    cdcConsumer.onStatementCompleted(eventWithBatchId.getBatchId(), false,
+                            "Failed to generate SQL statement",
+                            event.getEvent().getTableName(),
+                            event.getEvent().getOperation());
                 }
 
             } catch (Exception e) {
                 logger.error("Error generating statement for event", e);
+                // Notify consumer of failure with details
+                cdcConsumer.onStatementCompleted(eventWithBatchId.getBatchId(), false,
+                        "Statement generation error: " + e.getMessage(),
+                        eventWithBatchId.getEvent().getEvent().getTableName(),
+                        eventWithBatchId.getEvent().getEvent().getOperation());
             }
         }
 
@@ -258,7 +296,7 @@ public class WorkerPoolService {
     /**
      * Execute a batch of SQL statements within a transaction
      */
-    private void executeBatchedStatements(int workerId, List<PreparedSqlStatement> statements) {
+    private void executeBatchedStatements(int workerId, List<StatementWithBatchId> statements) {
         Connection connection = null;
         boolean transactionSuccessful = false;
 
@@ -271,18 +309,27 @@ public class WorkerPoolService {
 
             // Execute each statement in the batch
             int successCount = 0;
-            for (PreparedSqlStatement stmt : statements) {
+            List<StatementWithBatchId> successfulStatements = new ArrayList<>();
+            List<StatementWithBatchId> failedStatements = new ArrayList<>();
+
+            for (StatementWithBatchId stmt : statements) {
                 try {
-                    boolean success = executeStatement(connection, stmt);
+                    boolean success = executeStatement(connection, stmt.getStatement());
                     if (success) {
                         successCount++;
+                        successfulStatements.add(stmt);
                     } else {
-                        logger.warn("Statement execution returned false: {}", stmt);
+                        logger.warn("Statement execution returned false: {}", stmt.getStatement());
+                        failedStatements.add(stmt);
                     }
                 } catch (SQLException e) {
+                    String errorMessage = String.format("SQL Error [%d]: %s", e.getErrorCode(), e.getMessage());
                     logger.warn("SQL execution failed for {}: {} - {}",
-                            stmt.getType(), stmt.getTableName(), e.getMessage());
-                    totalFailedStatements.incrementAndGet();
+                            stmt.getStatement().getType(), stmt.getStatement().getTableName(), errorMessage);
+
+                    // Create enhanced statement with error details
+                    StatementWithBatchId failedStmt = new StatementWithBatchId(stmt.getStatement(), stmt.getBatchId(), errorMessage);
+                    failedStatements.add(failedStmt);
 
                     // For critical errors, abort the entire batch
                     if (isCriticalError(e)) {
@@ -299,6 +346,12 @@ public class WorkerPoolService {
                 totalBatchesExecuted.incrementAndGet();
                 totalStatementsExecuted.addAndGet(successCount);
 
+                // Notify consumer of all successes
+                for (StatementWithBatchId stmt : successfulStatements) {
+                    cdcConsumer.onStatementCompleted(stmt.getBatchId(), true, null,
+                            stmt.getStatement().getTableName(), stmt.getStatement().getOperation());
+                }
+
                 // Log progress every 2 minutes or every 100 batches
                 long now = System.currentTimeMillis();
                 long batchCount = totalBatchesExecuted.get();
@@ -313,7 +366,16 @@ public class WorkerPoolService {
                 connection.rollback();
                 logger.warn("Worker-{} rolled back batch due to failures. Success: {}, Total: {}",
                         workerId, successCount, statements.size());
-                totalFailedStatements.addAndGet(statements.size() - successCount);
+
+                // Notify consumer of all failures (entire batch failed due to transaction rollback)
+                for (StatementWithBatchId stmt : statements) {
+                    cdcConsumer.onStatementCompleted(stmt.getBatchId(), false,
+                            "Transaction rolled back due to batch failures",
+                            stmt.getStatement().getTableName(),
+                            stmt.getStatement().getOperation());
+                }
+
+                totalFailedStatements.addAndGet(statements.size());
             }
 
         } catch (SQLException e) {
@@ -322,12 +384,17 @@ public class WorkerPoolService {
 
             // Log the first few failed statements for debugging
             if (statements.size() <= 5) {
-                for (PreparedSqlStatement stmt : statements) {
-                    logger.warn("Failed statement: {} on table {}", stmt.getType(), stmt.getTableName());
+                for (StatementWithBatchId stmt : statements) {
+                    logger.warn("Failed statement: {} on table {}",
+                            stmt.getStatement().getType(), stmt.getStatement().getTableName());
                 }
             } else {
+                Set<String> tableNames = new HashSet<>();
+                for (StatementWithBatchId stmt : statements) {
+                    tableNames.add(stmt.getStatement().getTableName());
+                }
                 logger.warn("Failed batch contained {} statements for tables: {}",
-                        statements.size(), getUniqueTableNames(statements));
+                        statements.size(), tableNames);
             }
 
             // Rollback transaction
@@ -338,6 +405,14 @@ public class WorkerPoolService {
                 } catch (SQLException rollbackEx) {
                     logger.error("Error rolling back transaction for worker {}: {}", workerId, rollbackEx.getMessage());
                 }
+            }
+
+            // Notify consumer of all failures
+            for (StatementWithBatchId stmt : statements) {
+                cdcConsumer.onStatementCompleted(stmt.getBatchId(), false,
+                        "Batch execution failed: " + e.getMessage(),
+                        stmt.getStatement().getTableName(),
+                        stmt.getStatement().getOperation());
             }
 
             totalFailedStatements.addAndGet(statements.size());
@@ -387,7 +462,7 @@ public class WorkerPoolService {
     }
 
     /**
-     * Set parameter in prepared statement with type handling (same as your existing logic)
+     * Set parameter in prepared statement with type handling
      */
     private void setStatementParameter(PreparedStatement statement, int index, Object param) throws SQLException {
         if (param == null) {
@@ -395,7 +470,7 @@ public class WorkerPoolService {
         } else if (param instanceof String) {
             String strParam = (String) param;
 
-            // Handle UDT constructor strings (same logic as your SqlExecutionService)
+            // Handle UDT constructor strings
             if ((strParam.startsWith("HANDOFF_ROUTING_ROUTE_NO(") && strParam.endsWith(")")) ||
                     (strParam.startsWith("HANDOFF_ROADNET_ROUTE_NO(") && strParam.endsWith(")"))) {
 
@@ -439,7 +514,6 @@ public class WorkerPoolService {
         }
     }
 
-
     /**
      * Check if an SQL exception is critical and should stop batch processing
      */
@@ -459,17 +533,6 @@ public class WorkerPoolService {
         if (errorCode == 12154) return true; // TNS: could not resolve service name
 
         return false;
-    }
-
-    /**
-     * Get unique table names from a list of statements
-     */
-    private Set<String> getUniqueTableNames(List<PreparedSqlStatement> statements) {
-        Set<String> tableNames = new HashSet<>();
-        for (PreparedSqlStatement stmt : statements) {
-            tableNames.add(stmt.getTableName());
-        }
-        return tableNames;
     }
 
     /**
@@ -504,7 +567,7 @@ public class WorkerPoolService {
 
     @PreDestroy
     public void shutdown() {
-        logger.info("Shutting down Worker Pool Service");
+        logger.info("Shutting down Simplified Worker Pool Service");
 
         if (workerExecutor != null) {
             workerExecutor.shutdown();
@@ -521,6 +584,40 @@ public class WorkerPoolService {
             }
         }
 
-        logger.info("Worker Pool Service shutdown complete");
+        logger.info("Simplified Worker Pool Service shutdown complete");
+    }
+
+    // Helper classes for simple tracking
+    private static class EventWithBatchId {
+        private final EnhancedCdcEvent event;
+        private final String batchId;
+
+        public EventWithBatchId(EnhancedCdcEvent event, String batchId) {
+            this.event = event;
+            this.batchId = batchId;
+        }
+
+        public EnhancedCdcEvent getEvent() { return event; }
+        public String getBatchId() { return batchId; }
+    }
+
+    private static class StatementWithBatchId {
+        private final PreparedSqlStatement statement;
+        private final String batchId;
+        private final String errorMessage;
+
+        public StatementWithBatchId(PreparedSqlStatement statement, String batchId) {
+            this(statement, batchId, null);
+        }
+
+        public StatementWithBatchId(PreparedSqlStatement statement, String batchId, String errorMessage) {
+            this.statement = statement;
+            this.batchId = batchId;
+            this.errorMessage = errorMessage;
+        }
+
+        public PreparedSqlStatement getStatement() { return statement; }
+        public String getBatchId() { return batchId; }
+        public String getErrorMessage() { return errorMessage; }
     }
 }

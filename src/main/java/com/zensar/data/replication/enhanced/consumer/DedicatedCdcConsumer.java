@@ -26,12 +26,13 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Dedicated CDC Consumer for single topic processing with enhanced architecture:
- * Consumer(1) → Hashers(4) → Workers(16) → Connection Pool
+ * Simplified CDC Consumer with count-based offset management.
+ * Simple approach: Track batch size vs completed count, commit when they match.
  */
 @Service
 public class DedicatedCdcConsumer {
@@ -77,16 +78,30 @@ public class DedicatedCdcConsumer {
     private final AtomicBoolean running = new AtomicBoolean(false);
     private Thread consumerThread;
 
+    // Simple batch tracking with retry logic
+    private final Map<String, PendingBatch> pendingBatches = new ConcurrentHashMap<>();
+    private final Map<String, FailedBatch> failedBatches = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService offsetCommitter = Executors.newSingleThreadScheduledExecutor(
+            r -> new Thread(r, "Offset-Committer"));
+
+    // Failure tracking
+    private final List<String> criticalFailureReasons = new ArrayList<>();
+    private volatile boolean consumerStopped = false;
+
+    @Value("${cdc.enhanced.retry.max-attempts:2}")
+    private int maxRetryAttempts;
+
     // Enhanced Metrics
     private final AtomicLong totalBatchesProcessed = new AtomicLong(0);
     private final AtomicLong totalEventsProcessed = new AtomicLong(0);
     private final AtomicLong totalFailedBatches = new AtomicLong(0);
+    private final AtomicLong totalCommittedBatches = new AtomicLong(0);
     private final AtomicLong batchCounter = new AtomicLong(0);
     private volatile long lastProgressLog = System.currentTimeMillis();
 
     @PostConstruct
     public void init() {
-        logger.info("=== ENHANCED CDC CONSUMER STARTING ===");
+        logger.info("=== SIMPLIFIED CDC CONSUMER STARTING ===");
         logger.info("Topic: {}", dedicatedTopic);
         logger.info("Consumer Group: {}", consumerGroupId);
         logger.info("Batch Size: {}", batchSize);
@@ -96,6 +111,7 @@ public class DedicatedCdcConsumer {
         logger.info("========================================");
 
         startConsumer();
+        // Remove async offset committer - we're doing sync commits now
 
         logger.info("=== CDC CONSUMER READY FOR PROCESSING ===");
     }
@@ -105,6 +121,7 @@ public class DedicatedCdcConsumer {
             Properties props = new Properties();
             props.putAll(consumerFactory.getConfigurationProperties());
             props.put("group.id", consumerGroupId);
+            props.put("enable.auto.commit", "false"); // Manual offset management
 
             consumer = new KafkaConsumer<>(props);
             consumer.subscribe(Collections.singletonList(dedicatedTopic));
@@ -117,36 +134,39 @@ public class DedicatedCdcConsumer {
         }
     }
 
+    private void startOffsetCommitter() {
+        // Check for completed batches every 5 seconds
+        offsetCommitter.scheduleAtFixedRate(this::checkAndCommitCompletedBatches, 5, 5, TimeUnit.SECONDS);
+    }
+
     private void consumeLoop() {
         logger.info("Starting CDC consumer loop for topic: {}", dedicatedTopic);
 
-        List<EnhancedCdcEvent> currentBatch = new ArrayList<>();
-        Map<TopicPartition, Long> batchOffsets = new HashMap<>();
+        List<BatchRecord> currentBatch = new ArrayList<>();
 
-        while (running.get() && !Thread.currentThread().isInterrupted()) {
+        while (running.get() && !Thread.currentThread().isInterrupted() && !consumerStopped) {
             try {
                 ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(pollTimeoutMs));
 
                 if (records.isEmpty()) {
                     if (!currentBatch.isEmpty()) {
                         logger.debug("Processing partial batch of {} events due to timeout", currentBatch.size());
-                        boolean success = processBatch(currentBatch, batchOffsets);
-                        if (success) {
-                            commitOffsets(batchOffsets);
-                        }
+                        processBatch(new ArrayList<>(currentBatch));
                         currentBatch.clear();
-                        batchOffsets.clear();
                     }
                     continue;
                 }
+
+                // Commit any pending offsets (thread-safe)
+                commitPendingOffsets();
 
                 for (ConsumerRecord<String, String> record : records) {
                     try {
                         EnhancedCdcEvent event = parseRecord(record);
                         if (event != null) {
-                            currentBatch.add(event);
-                            TopicPartition tp = new TopicPartition(record.topic(), record.partition());
-                            batchOffsets.put(tp, record.offset() + 1);
+                            BatchRecord batchRecord = new BatchRecord(event, record.topic(),
+                                    record.partition(), record.offset());
+                            currentBatch.add(batchRecord);
                         }
                     } catch (Exception e) {
                         logger.error("Error parsing record from offset {}", record.offset(), e);
@@ -156,29 +176,20 @@ public class DedicatedCdcConsumer {
                 if (currentBatch.size() >= batchSize) {
                     long batchNum = batchCounter.incrementAndGet();
 
-                    // Log every 10th batch or large batches
                     if (batchNum % 10 == 0 || currentBatch.size() > 500) {
-                        logger.info("CONSUMER: Processed {} batches, current: {} events, total processed: {}",
+                        logger.info("CONSUMER: Processing batch #{} with {} events, total processed: {}",
                                 batchNum, currentBatch.size(), totalEventsProcessed.get());
                     } else {
                         logger.debug("Processing batch #{} of {} events", batchNum, currentBatch.size());
                     }
 
-                    boolean success = processBatch(currentBatch, batchOffsets);
-                    if (success) {
-                        commitOffsets(batchOffsets);
-                    } else {
-                        logger.error("CONSUMER: Batch processing failed, will not commit offsets");
-                        totalFailedBatches.incrementAndGet();
-                    }
+                    processBatch(new ArrayList<>(currentBatch));
                     currentBatch.clear();
-                    batchOffsets.clear();
                 }
 
             } catch (Exception e) {
                 logger.error("Error in consumer loop", e);
                 currentBatch.clear();
-                batchOffsets.clear();
 
                 try {
                     Thread.sleep(1000);
@@ -189,20 +200,404 @@ public class DedicatedCdcConsumer {
             }
         }
 
-        if (!currentBatch.isEmpty()) {
+        // Process final batch
+        if (!currentBatch.isEmpty() && !consumerStopped) {
             logger.info("Processing final batch of {} events", currentBatch.size());
             try {
-                boolean success = processBatch(currentBatch, batchOffsets);
-                if (success) {
-                    commitOffsets(batchOffsets);
-                }
+                processBatch(currentBatch);
             } catch (Exception e) {
                 logger.error("Error processing final batch", e);
             }
         }
 
+        if (consumerStopped) {
+            logger.error("=== CDC CONSUMER STOPPED DUE TO CRITICAL FAILURES ===");
+            for (String reason : criticalFailureReasons) {
+                logger.error("CRITICAL FAILURE: {}", reason);
+            }
+            logger.error("========================================================");
+        }
+
         logger.info("CDC consumer loop stopped");
     }
+
+    private void commitPendingOffsets() {
+        if (pendingOffsetCommits.isEmpty()) {
+            return;
+        }
+
+        try {
+            Map<TopicPartition, org.apache.kafka.clients.consumer.OffsetAndMetadata> toCommit;
+            synchronized (this) {
+                toCommit = new HashMap<>(pendingOffsetCommits);
+                pendingOffsetCommits.clear();
+            }
+
+            if (!toCommit.isEmpty()) {
+                consumer.commitSync(toCommit);
+                logger.debug("Successfully committed {} pending offsets", toCommit.size());
+            }
+        } catch (Exception e) {
+            logger.error("Error committing pending offsets", e);
+            // Re-add failed offsets for retry
+            synchronized (this) {
+                pendingOffsetCommits.putAll(pendingOffsetCommits);
+            }
+        }
+    }
+
+    private void processBatch(List<BatchRecord> batchRecords) {
+        if (batchRecords.isEmpty()) {
+            return;
+        }
+
+        String batchId = UUID.randomUUID().toString();
+        totalBatchesProcessed.incrementAndGet();
+
+        // Create pending batch tracker
+        PendingBatch pendingBatch = new PendingBatch(batchId, batchRecords);
+        pendingBatches.put(batchId, pendingBatch);
+
+        // Extract events for processing
+        List<EnhancedCdcEvent> events = batchRecords.stream()
+                .map(BatchRecord::getEvent)
+                .collect(ArrayList::new, ArrayList::add, ArrayList::addAll);
+
+        // Log large batches
+        if (events.size() > 100) {
+            logger.info("CONSUMER: Processing batch: {} events (ID: {})", events.size(), batchId);
+        } else {
+            logger.debug("Submitting batch of {} events to hasher service (ID: {})", events.size(), batchId);
+        }
+
+        try {
+            // Submit to hasher service - simple submission without complex callbacks
+            boolean submitted = hasherService.submitBatch(events, batchId);
+
+            if (!submitted) {
+                logger.error("Failed to submit batch to hasher service (ID: {})", batchId);
+                pendingBatches.remove(batchId);
+                totalFailedBatches.incrementAndGet();
+                return; // Don't process this batch
+            }
+
+            // ✅ CRITICAL: WAIT for batch completion before returning
+            logger.info("WAITING for batch {} completion ({} events)", batchId, events.size());
+
+            boolean batchCompleted = waitForBatchCompletion(batchId, events.size());
+
+            if (batchCompleted) {
+                // ✅ Batch completed successfully - commit offsets
+                commitBatchOffsetsSync(pendingBatch);
+                totalCommittedBatches.incrementAndGet();
+                totalEventsProcessed.addAndGet(events.size());
+                logger.info("BATCH COMPLETED & COMMITTED: {} ({} events)", batchId, events.size());
+            } else {
+                // ❌ Batch failed or timed out - DO NOT commit offsets
+                logger.error("BATCH FAILED OR TIMED OUT: {} ({} events) - NO COMMIT", batchId, events.size());
+                totalFailedBatches.incrementAndGet();
+            }
+
+        } catch (Exception e) {
+            logger.error("Error processing batch (ID: {})", batchId, e);
+            totalFailedBatches.incrementAndGet();
+        } finally {
+            // Clean up
+            pendingBatches.remove(batchId);
+        }
+    }
+
+    /**
+     * BLOCKING method that waits for batch completion
+     */
+    private boolean waitForBatchCompletion(String batchId, int expectedEventCount) {
+        long startTime = System.currentTimeMillis();
+        long timeoutMs = 60000; // 60 seconds timeout
+
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            PendingBatch batch = pendingBatches.get(batchId);
+            if (batch == null) {
+                return false; // Batch disappeared
+            }
+
+            int completed = batch.getCompletedCount();
+            int failed = batch.getFailedCount();
+            int total = completed + failed;
+
+            if (total >= expectedEventCount) {
+                // All events processed
+                if (failed == 0) {
+                    logger.info("BATCH SUCCESS: {} - {}/{} events completed", batchId, completed, expectedEventCount);
+                    return true;
+                } else {
+                    logger.warn("BATCH PARTIAL FAILURE: {} - {}/{} completed, {} failed",
+                            batchId, completed, expectedEventCount, failed);
+                    return false;
+                }
+            }
+
+            // Log progress every 5 seconds
+            if ((System.currentTimeMillis() - startTime) % 5000 < 100) {
+                logger.info("WAITING: {} - {}/{} events completed", batchId, total, expectedEventCount);
+            }
+
+            try {
+                Thread.sleep(100); // Check every 100ms
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+
+        // Timeout
+        logger.error("TIMEOUT waiting for batch completion: {}", batchId);
+        return false;
+    }
+
+    /**
+     * Synchronous offset commit (thread-safe)
+     */
+    private void commitBatchOffsetsSync(PendingBatch batch) {
+        try {
+            Map<TopicPartition, org.apache.kafka.clients.consumer.OffsetAndMetadata> offsetsToCommit = new HashMap<>();
+
+            for (BatchRecord record : batch.getBatchRecords()) {
+                TopicPartition tp = new TopicPartition(record.getTopic(), record.getPartition());
+                long nextOffset = record.getOffset() + 1;
+                offsetsToCommit.put(tp, new org.apache.kafka.clients.consumer.OffsetAndMetadata(nextOffset));
+            }
+
+            // Commit from consumer thread (thread-safe)
+            consumer.commitSync(offsetsToCommit);
+            logger.info("COMMITTED offsets for batch {} ({} partitions)",
+                    batch.getBatchId(), offsetsToCommit.size());
+
+        } catch (Exception e) {
+            logger.error("ERROR committing offsets for batch {}", batch.getBatchId(), e);
+            throw new RuntimeException("Failed to commit offsets", e);
+        }
+    }
+
+    /**
+     * Called by worker when a SQL statement is completed
+     */
+    public void onStatementCompleted(String batchId, boolean success, String failureReason, String tableName, String operation) {
+        PendingBatch pendingBatch = pendingBatches.get(batchId);
+        if (pendingBatch != null) {
+            if (success) {
+                pendingBatch.incrementCompletedCount();
+            } else {
+                pendingBatch.incrementFailedCount();
+                // Track failure details
+                pendingBatch.addFailureDetail(tableName, operation, failureReason);
+            }
+        }
+    }
+
+    /**
+     * Overloaded method for backward compatibility
+     */
+    public void onStatementCompleted(String batchId, boolean success) {
+        onStatementCompleted(batchId, success, null, null, null);
+    }
+
+    private void checkAndCommitCompletedBatches() {
+        if (!running.get() || consumer == null || consumerStopped) {
+            return;
+        }
+
+        List<String> completedBatchIds = new ArrayList<>();
+
+        for (Map.Entry<String, PendingBatch> entry : pendingBatches.entrySet()) {
+            String batchId = entry.getKey();
+            PendingBatch batch = entry.getValue();
+
+            int totalEvents = batch.getTotalEvents();
+            int completedEvents = batch.getCompletedCount();
+            int failedEvents = batch.getFailedCount();
+
+            // Check if batch is complete (all events processed)
+            if (completedEvents + failedEvents >= totalEvents) {
+                completedBatchIds.add(batchId);
+
+                if (failedEvents == 0) {
+                    // All events succeeded - commit offsets
+                    commitBatchOffsets(batch);
+                    totalCommittedBatches.incrementAndGet();
+                    totalEventsProcessed.addAndGet(completedEvents);
+
+                    logger.debug("Batch {} completed successfully: {}/{} events",
+                            batchId, completedEvents, totalEvents);
+                } else {
+                    // Some events failed - handle retry logic
+                    handleFailedBatch(batch);
+                }
+            }
+        }
+
+        // Remove completed batches
+        for (String batchId : completedBatchIds) {
+            pendingBatches.remove(batchId);
+        }
+
+        // Log progress
+        if (!completedBatchIds.isEmpty()) {
+            long now = System.currentTimeMillis();
+            if (now - lastProgressLog > 120000) { // Every 2 minutes
+                logger.info("CONSUMER PROGRESS: {} batches committed, {} events processed, {} failed batches, {} pending",
+                        totalCommittedBatches.get(), totalEventsProcessed.get(),
+                        totalFailedBatches.get(), pendingBatches.size());
+                lastProgressLog = now;
+            }
+        }
+    }
+
+    private void handleFailedBatch(PendingBatch batch) {
+        String batchId = batch.getBatchId();
+        int failedEvents = batch.getFailedCount();
+        int totalEvents = batch.getTotalEvents();
+        int completedEvents = batch.getCompletedCount();
+
+        logger.warn("Batch {} failed: {}/{} events succeeded, {} failed",
+                batchId, completedEvents, totalEvents, failedEvents);
+
+        // Check if this batch has already been retried
+        FailedBatch existingFailure = failedBatches.get(batchId);
+
+        if (existingFailure == null) {
+            // First failure - add to failed batches for retry
+            FailedBatch failedBatch = new FailedBatch(batch, 1);
+            failedBatches.put(batchId, failedBatch);
+
+            logger.info("RETRY: Batch {} will be retried (attempt 1/{}) - {} failures: {}",
+                    batchId, maxRetryAttempts, failedEvents, batch.getFailureDetails());
+
+            // Retry the batch
+            retryBatch(batch);
+
+        } else if (existingFailure.getRetryCount() < maxRetryAttempts) {
+            // Retry again
+            existingFailure.incrementRetryCount();
+
+            logger.warn("RETRY: Batch {} will be retried (attempt {}/{}) - {} failures: {}",
+                    batchId, existingFailure.getRetryCount(), maxRetryAttempts, failedEvents, batch.getFailureDetails());
+
+            retryBatch(batch);
+
+        } else {
+            // Max retries exceeded - stop consumer
+            logger.error("CRITICAL: Batch {} exceeded max retries ({}) - STOPPING CONSUMER",
+                    batchId, maxRetryAttempts);
+
+            // Log detailed failure information
+            logCriticalFailure(batch);
+
+            // Stop the consumer
+            stopConsumerDueToCriticalFailure(batch);
+        }
+
+        totalFailedBatches.incrementAndGet();
+    }
+
+    private void retryBatch(PendingBatch failedBatch) {
+        try {
+            // Reset counters for retry
+            failedBatch.resetCounters();
+
+            // Create new batch ID for retry
+            String retryBatchId = failedBatch.getBatchId() + "-retry-" + System.currentTimeMillis();
+
+            // Update batch ID
+            failedBatch.setBatchId(retryBatchId);
+
+            // Move from pending to new retry batch
+            pendingBatches.put(retryBatchId, failedBatch);
+
+            // Extract events for reprocessing
+            List<EnhancedCdcEvent> events = failedBatch.getBatchRecords().stream()
+                    .map(BatchRecord::getEvent)
+                    .collect(ArrayList::new, ArrayList::add, ArrayList::addAll);
+
+            logger.info("RETRY: Resubmitting batch {} with {} events", retryBatchId, events.size());
+
+            // Resubmit to hasher service
+            boolean submitted = hasherService.submitBatch(events, retryBatchId);
+
+            if (!submitted) {
+                logger.error("RETRY FAILED: Could not resubmit batch {}", retryBatchId);
+                pendingBatches.remove(retryBatchId);
+            }
+
+        } catch (Exception e) {
+            logger.error("Error during batch retry", e);
+        }
+    }
+
+    private void logCriticalFailure(PendingBatch batch) {
+        StringBuilder failureLog = new StringBuilder();
+        failureLog.append("\n=== CRITICAL FAILURE DETAILS ===\n");
+        failureLog.append("Batch ID: ").append(batch.getBatchId()).append("\n");
+        failureLog.append("Total Events: ").append(batch.getTotalEvents()).append("\n");
+        failureLog.append("Failed Events: ").append(batch.getFailedCount()).append("\n");
+        failureLog.append("Completed Events: ").append(batch.getCompletedCount()).append("\n");
+        failureLog.append("Max Retry Attempts: ").append(maxRetryAttempts).append("\n");
+        failureLog.append("\nFAILED STATEMENTS:\n");
+
+        List<String> failureDetails = batch.getFailureDetails();
+        for (int i = 0; i < failureDetails.size(); i++) {
+            failureLog.append("  ").append(i + 1).append(". ").append(failureDetails.get(i)).append("\n");
+        }
+
+        failureLog.append("=================================");
+
+        logger.error(failureLog.toString());
+
+        // Store for shutdown message
+        String criticalReason = String.format("Batch %s failed %d times with %d statement failures",
+                batch.getBatchId(), maxRetryAttempts, batch.getFailedCount());
+        criticalFailureReasons.add(criticalReason);
+    }
+
+    private void stopConsumerDueToCriticalFailure(PendingBatch batch) {
+        consumerStopped = true;
+        running.set(false);
+
+        logger.error("=== STOPPING CDC CONSUMER DUE TO CRITICAL FAILURES ===");
+        logger.error("Consumer will stop processing new events.");
+        logger.error("Manual intervention required to resolve failures.");
+        logger.error("Check the failure details above and fix the root cause.");
+        logger.error("======================================================");
+    }
+
+    private void commitBatchOffsets(PendingBatch batch) {
+        try {
+            // Use a queue to pass commit requests to the consumer thread
+            synchronized (this) {
+                Map<TopicPartition, org.apache.kafka.clients.consumer.OffsetAndMetadata> offsetsToCommit = new HashMap<>();
+
+                for (BatchRecord record : batch.getBatchRecords()) {
+                    TopicPartition tp = new TopicPartition(record.getTopic(), record.getPartition());
+                    long nextOffset = record.getOffset() + 1;
+                    offsetsToCommit.put(tp, new org.apache.kafka.clients.consumer.OffsetAndMetadata(nextOffset));
+                }
+
+                // Store offsets to commit - will be committed by consumer thread
+                pendingOffsetCommits.putAll(offsetsToCommit);
+
+                logger.debug("Queued offsets for commit - batch {} with {} partitions",
+                        batch.getBatchId(), offsetsToCommit.size());
+            }
+
+        } catch (Exception e) {
+            logger.error("Error queuing offsets for batch {}", batch.getBatchId(), e);
+            throw new RuntimeException("Failed to queue offsets for commit", e);
+        }
+    }
+
+    // Add this field at the top of the class
+    private final Map<TopicPartition, org.apache.kafka.clients.consumer.OffsetAndMetadata> pendingOffsetCommits = new ConcurrentHashMap<>();
+
+    // ... (keep all the existing parsing methods unchanged) ...
 
     private EnhancedCdcEvent parseRecord(ConsumerRecord<String, String> record) {
         try {
@@ -240,68 +635,6 @@ public class DedicatedCdcConsumer {
         } catch (Exception e) {
             logger.error("Error parsing record", e);
             return null;
-        }
-    }
-
-    private boolean processBatch(List<EnhancedCdcEvent> batch, Map<TopicPartition, Long> offsets) {
-        if (batch.isEmpty()) {
-            return true;
-        }
-
-        totalBatchesProcessed.incrementAndGet();
-
-        // Log large batches
-        if (batch.size() > 100) {
-            logger.info("CONSUMER: Processing large batch: {} events", batch.size());
-        } else {
-            logger.debug("Submitting batch of {} events to hasher service", batch.size());
-        }
-
-        try {
-            boolean success = hasherService.submitBatch(batch);
-
-            if (success) {
-                totalEventsProcessed.addAndGet(batch.size());
-
-                // Log progress every 2 minutes or every 50 batches
-                long now = System.currentTimeMillis();
-                long batchCount = totalBatchesProcessed.get();
-                if (now - lastProgressLog > 120000 || batchCount % 50 == 0) {
-                    logger.info("CONSUMER PROGRESS: {} batches submitted, {} events processed, {} failed batches",
-                            batchCount, totalEventsProcessed.get(), totalFailedBatches.get());
-                    lastProgressLog = now;
-                }
-
-                return true;
-            } else {
-                logger.error("Failed to submit batch to hasher service");
-                return false;
-            }
-
-        } catch (Exception e) {
-            logger.error("Error processing batch", e);
-            return false;
-        }
-    }
-
-    private void commitOffsets(Map<TopicPartition, Long> offsets) {
-        if (offsets.isEmpty()) {
-            return;
-        }
-
-        try {
-            Map<TopicPartition, org.apache.kafka.clients.consumer.OffsetAndMetadata> offsetsToCommit = new HashMap<>();
-            for (Map.Entry<TopicPartition, Long> entry : offsets.entrySet()) {
-                offsetsToCommit.put(entry.getKey(),
-                        new org.apache.kafka.clients.consumer.OffsetAndMetadata(entry.getValue()));
-            }
-
-            consumer.commitSync(offsetsToCommit);
-            logger.debug("Successfully committed offsets for {} partitions", offsets.size());
-
-        } catch (Exception e) {
-            logger.error("Error committing offsets", e);
-            throw new RuntimeException("Failed to commit offsets", e);
         }
     }
 
@@ -399,10 +732,12 @@ public class DedicatedCdcConsumer {
     @Scheduled(fixedRate = 300000) // Every 5 minutes
     public void logHealthStatus() {
         if (running.get()) {
-            logger.info("CDC HEALTH CHECK - Batches: {}, Events: {}, Failed: {}, Running: {}",
+            logger.info("CDC HEALTH CHECK - Batches: {}, Events: {}, Committed: {}, Failed: {}, Pending: {}, Running: {}",
                     totalBatchesProcessed.get(),
                     totalEventsProcessed.get(),
+                    totalCommittedBatches.get(),
                     totalFailedBatches.get(),
+                    pendingBatches.size(),
                     running.get());
         }
     }
@@ -414,7 +749,9 @@ public class DedicatedCdcConsumer {
         metrics.put("consumerGroupId", consumerGroupId);
         metrics.put("totalBatchesProcessed", totalBatchesProcessed.get());
         metrics.put("totalEventsProcessed", totalEventsProcessed.get());
+        metrics.put("totalCommittedBatches", totalCommittedBatches.get());
         metrics.put("totalFailedBatches", totalFailedBatches.get());
+        metrics.put("pendingBatches", pendingBatches.size());
         metrics.put("batchSize", batchSize);
         return metrics;
     }
@@ -424,6 +761,23 @@ public class DedicatedCdcConsumer {
         logger.info("Shutting down CDC Consumer");
 
         running.set(false);
+
+        // Wait for pending batches to complete
+        if (!pendingBatches.isEmpty()) {
+            logger.info("Waiting for {} pending batches to complete", pendingBatches.size());
+            try {
+                Thread.sleep(10000); // Wait 10 seconds for completion
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        // Final offset commit attempt
+        checkAndCommitCompletedBatches();
+
+        if (offsetCommitter != null) {
+            offsetCommitter.shutdown();
+        }
 
         if (consumerThread != null) {
             try {
@@ -448,6 +802,7 @@ public class DedicatedCdcConsumer {
         logger.info("=== CDC CONSUMER SHUTDOWN COMPLETE ===");
     }
 
+    // Helper classes
     public static class EnhancedCdcEvent {
         private final CdcEvent event;
         private final Map<String, FieldTypeInfo> fieldTypeMap;
@@ -457,12 +812,81 @@ public class DedicatedCdcConsumer {
             this.fieldTypeMap = fieldTypeMap;
         }
 
-        public CdcEvent getEvent() {
-            return event;
+        public CdcEvent getEvent() { return event; }
+        public Map<String, FieldTypeInfo> getFieldTypeMap() { return fieldTypeMap; }
+    }
+
+    private static class BatchRecord {
+        private final EnhancedCdcEvent event;
+        private final String topic;
+        private final int partition;
+        private final long offset;
+
+        public BatchRecord(EnhancedCdcEvent event, String topic, int partition, long offset) {
+            this.event = event;
+            this.topic = topic;
+            this.partition = partition;
+            this.offset = offset;
         }
 
-        public Map<String, FieldTypeInfo> getFieldTypeMap() {
-            return fieldTypeMap;
+        public EnhancedCdcEvent getEvent() { return event; }
+        public String getTopic() { return topic; }
+        public int getPartition() { return partition; }
+        public long getOffset() { return offset; }
+    }
+
+    private static class PendingBatch {
+        private String batchId;
+        private final List<BatchRecord> batchRecords;
+        private final AtomicLong completedCount = new AtomicLong(0);
+        private final AtomicLong failedCount = new AtomicLong(0);
+        private final List<String> failureDetails = new ArrayList<>();
+
+        public PendingBatch(String batchId, List<BatchRecord> batchRecords) {
+            this.batchId = batchId;
+            this.batchRecords = new ArrayList<>(batchRecords);
         }
+
+        public String getBatchId() { return batchId; }
+        public void setBatchId(String batchId) { this.batchId = batchId; }
+        public List<BatchRecord> getBatchRecords() { return batchRecords; }
+        public int getTotalEvents() { return batchRecords.size(); }
+        public int getCompletedCount() { return (int) completedCount.get(); }
+        public int getFailedCount() { return (int) failedCount.get(); }
+        public List<String> getFailureDetails() { return new ArrayList<>(failureDetails); }
+
+        public void incrementCompletedCount() { completedCount.incrementAndGet(); }
+        public void incrementFailedCount() { failedCount.incrementAndGet(); }
+
+        public void addFailureDetail(String tableName, String operation, String reason) {
+            if (tableName != null && operation != null && reason != null) {
+                String detail = String.format("Table: %s, Operation: %s, Reason: %s", tableName, operation, reason);
+                synchronized (failureDetails) {
+                    failureDetails.add(detail);
+                }
+            }
+        }
+
+        public void resetCounters() {
+            completedCount.set(0);
+            failedCount.set(0);
+            synchronized (failureDetails) {
+                failureDetails.clear();
+            }
+        }
+    }
+
+    private static class FailedBatch {
+        private final PendingBatch originalBatch;
+        private int retryCount;
+
+        public FailedBatch(PendingBatch originalBatch, int retryCount) {
+            this.originalBatch = originalBatch;
+            this.retryCount = retryCount;
+        }
+
+        public PendingBatch getOriginalBatch() { return originalBatch; }
+        public int getRetryCount() { return retryCount; }
+        public void incrementRetryCount() { this.retryCount++; }
     }
 }

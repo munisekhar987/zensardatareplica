@@ -10,6 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
@@ -19,8 +20,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Primary Key Hasher Service with configurable threads that hash events to configurable partitions
- * based on primary key values for consistent ordering.
+ * Simplified Primary Key Hasher Service with simple count tracking.
  */
 @Service
 public class PrimaryKeyHasherService {
@@ -39,21 +39,21 @@ public class PrimaryKeyHasherService {
     private SqlExecutionService sqlExecutionService;
 
     @Autowired
+    @Lazy
     private WorkerPoolService workerPoolService;
 
     private ExecutorService hasherExecutor;
-    private final List<BlockingQueue<EnhancedCdcEvent>> hasherQueues = new ArrayList<>();
+    private final List<BlockingQueue<BatchWithId>> hasherQueues = new ArrayList<>();
     private final AtomicLong hasherCounter = new AtomicLong(0);
 
     // Enhanced Metrics
     private final AtomicLong totalEventsReceived = new AtomicLong(0);
     private final AtomicLong totalEventsHashed = new AtomicLong(0);
     private final AtomicLong hashedBatchCounter = new AtomicLong(0);
-    private volatile long lastInfoLog = System.currentTimeMillis();
 
     @PostConstruct
     public void init() {
-        logger.info("Initializing Primary Key Hasher Service");
+        logger.info("Initializing Simplified Primary Key Hasher Service");
         logger.info("Hasher Threads: {}, Target Partitions: {}, Queue Size: {}",
                 hasherThreadCount, totalPartitions, hasherQueueSize);
 
@@ -62,7 +62,7 @@ public class PrimaryKeyHasherService {
         }
 
         hasherExecutor = Executors.newFixedThreadPool(hasherThreadCount, r -> {
-            Thread t = new Thread(r, "Enhanced-Hasher-" + Thread.currentThread().getId());
+            Thread t = new Thread(r, "Simplified-Hasher-" + Thread.currentThread().getId());
             t.setDaemon(true);
             return t;
         });
@@ -72,10 +72,10 @@ public class PrimaryKeyHasherService {
             hasherExecutor.submit(() -> runHasher(hasherId));
         }
 
-        logger.info("Primary Key Hasher Service started with {} threads", hasherThreadCount);
+        logger.info("Simplified Primary Key Hasher Service started with {} threads", hasherThreadCount);
     }
 
-    public boolean submitBatch(List<EnhancedCdcEvent> events) {
+    public boolean submitBatch(List<EnhancedCdcEvent> events, String batchId) {
         if (events == null || events.isEmpty()) {
             return true;
         }
@@ -85,13 +85,14 @@ public class PrimaryKeyHasherService {
 
         // Log every 20 batches or large batches
         if (currentBatch % 20 == 0 || events.size() > 200) {
-            logger.info("HASHER: Processed {} batches, current: {} events, total received: {}, total hashed: {}",
+            logger.info("HASHER: Processing batch #{}, events: {}, total received: {}, total hashed: {}",
                     currentBatch, events.size(), totalEventsReceived.get(), totalEventsHashed.get());
         } else {
             logger.debug("Hasher processing batch {} with {} events", currentBatch, events.size());
         }
 
         try {
+            // Group events by hasher
             Map<Integer, List<EnhancedCdcEvent>> hasherBatches = new HashMap<>();
 
             for (EnhancedCdcEvent event : events) {
@@ -99,16 +100,19 @@ public class PrimaryKeyHasherService {
                 hasherBatches.computeIfAbsent(hasherId, k -> new ArrayList<>()).add(event);
             }
 
+            // Submit to each hasher
             boolean allSubmitted = true;
             for (Map.Entry<Integer, List<EnhancedCdcEvent>> entry : hasherBatches.entrySet()) {
                 int hasherId = entry.getKey();
                 List<EnhancedCdcEvent> hasherEvents = entry.getValue();
 
-                for (EnhancedCdcEvent event : hasherEvents) {
-                    if (!hasherQueues.get(hasherId).offer(event, 100, TimeUnit.MILLISECONDS)) {
-                        logger.warn("Failed to submit event to hasher {} queue (queue full)", hasherId);
-                        allSubmitted = false;
-                    }
+                BatchWithId batchWithId = new BatchWithId(hasherEvents, batchId);
+
+                if (!hasherQueues.get(hasherId).offer(batchWithId, 100, TimeUnit.MILLISECONDS)) {
+                    logger.warn("Failed to submit batch to hasher {} queue (queue full)", hasherId);
+                    allSubmitted = false;
+                } else {
+                    logger.debug("Submitted {} events to hasher {}", hasherEvents.size(), hasherId);
                 }
             }
 
@@ -126,31 +130,38 @@ public class PrimaryKeyHasherService {
 
     private void runHasher(int hasherId) {
         logger.info("Hasher-{} thread started and ready", hasherId);
-        BlockingQueue<EnhancedCdcEvent> queue = hasherQueues.get(hasherId);
+        BlockingQueue<BatchWithId> queue = hasherQueues.get(hasherId);
         long eventsProcessed = 0;
         long lastProgressLog = System.currentTimeMillis();
 
         while (!Thread.currentThread().isInterrupted()) {
             try {
-                EnhancedCdcEvent event = queue.take();
+                BatchWithId batchWithId = queue.take();
+                List<EnhancedCdcEvent> events = batchWithId.getEvents();
+                String batchId = batchWithId.getBatchId();
 
-                int partition = calculatePartition(event);
+                logger.debug("Hasher-{} processing {} events for batch {}", hasherId, events.size(), batchId);
 
-                boolean submitted = workerPoolService.submitToWorker(partition, event);
+                // Process each event in the batch
+                for (EnhancedCdcEvent event : events) {
+                    int partition = calculatePartition(event);
 
-                if (submitted) {
-                    totalEventsHashed.incrementAndGet();
-                    eventsProcessed++;
+                    boolean submitted = workerPoolService.submitToWorker(partition, event, batchId);
 
-                    // Log progress every minute or every 1000 events
-                    long now = System.currentTimeMillis();
-                    if (now - lastProgressLog > 60000 || eventsProcessed % 1000 == 0) {
-                        logger.info("HASHER-{}: {} events processed, queue size: {}, total hashed: {}",
-                                hasherId, eventsProcessed, queue.size(), totalEventsHashed.get());
-                        lastProgressLog = now;
+                    if (submitted) {
+                        totalEventsHashed.incrementAndGet();
+                        eventsProcessed++;
+                    } else {
+                        logger.warn("Hasher-{}: Failed to submit event to worker partition {}", hasherId, partition);
                     }
-                } else {
-                    logger.warn("Hasher-{}: Failed to submit event to worker partition {}", hasherId, partition);
+                }
+
+                // Log progress
+                long now = System.currentTimeMillis();
+                if (now - lastProgressLog > 60000 || eventsProcessed % 1000 == 0) {
+                    logger.info("HASHER-{}: {} events processed, queue size: {}, total hashed: {}",
+                            hasherId, eventsProcessed, queue.size(), totalEventsHashed.get());
+                    lastProgressLog = now;
                 }
 
             } catch (InterruptedException e) {
@@ -168,7 +179,6 @@ public class PrimaryKeyHasherService {
     private int calculatePartition(EnhancedCdcEvent enhancedEvent) {
         try {
             CdcEvent event = enhancedEvent.getEvent();
-            Map<String, FieldTypeInfo> fieldTypeMap = enhancedEvent.getFieldTypeMap();
 
             List<String> primaryKeyFields = sqlExecutionService.getPrimaryKeyFields(event.getTableName());
 
@@ -250,7 +260,7 @@ public class PrimaryKeyHasherService {
 
     @PreDestroy
     public void shutdown() {
-        logger.info("Shutting down Primary Key Hasher Service");
+        logger.info("Shutting down Simplified Primary Key Hasher Service");
 
         if (hasherExecutor != null) {
             hasherExecutor.shutdown();
@@ -267,6 +277,20 @@ public class PrimaryKeyHasherService {
             }
         }
 
-        logger.info("Primary Key Hasher Service shutdown complete");
+        logger.info("Simplified Primary Key Hasher Service shutdown complete");
+    }
+
+    // Helper class for batch tracking
+    private static class BatchWithId {
+        private final List<EnhancedCdcEvent> events;
+        private final String batchId;
+
+        public BatchWithId(List<EnhancedCdcEvent> events, String batchId) {
+            this.events = events;
+            this.batchId = batchId;
+        }
+
+        public List<EnhancedCdcEvent> getEvents() { return events; }
+        public String getBatchId() { return batchId; }
     }
 }
