@@ -26,7 +26,7 @@ spec:
           env:
             - name: KAFKA_GROUP_ID
               value: "enhanced-consumer-test"
-            - name: CDC_TOPICS
+            - name: CDC_ENHANCED_TOPIC
               value: "enhanced.fdstore_prda.reservation"
             - name: CDC_TOPIC_TABLE_MAPPINGS
               value: "{'enhanced.fdstore_prda.reservation': 'RESERVATION'}"
