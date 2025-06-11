@@ -1,17 +1,17 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: cdc-consumer-dlv-all
+  name: cdc-consumer-test-fdstore-reservation
   namespace: enhanced-consumers
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: cdc-consumer-dlv-all
+      app: cdc-consumer-test-fdstore-reservation
   template:
     metadata:
       labels:
-        app: cdc-consumer-dlv-all
+        app: cdc-consumer-test-fdstore-reservation
     spec:
       containers:
         - name: cdc-consumer
