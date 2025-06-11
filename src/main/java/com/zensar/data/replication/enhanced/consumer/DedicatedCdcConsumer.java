@@ -99,12 +99,11 @@ import java.util.concurrent.atomic.AtomicLong;
         private final AtomicLong batchCounter = new AtomicLong(0);
         private volatile long lastProgressLog = System.currentTimeMillis();
 
-        // TPS Tracking
+        // TPS Tracking - Corrected approach
         private volatile long tpsStartTime = System.currentTimeMillis();
-        private final AtomicLong eventsInLastMinute = new AtomicLong(0);
-        private final AtomicLong eventsInLastSecond = new AtomicLong(0);
+        private final AtomicLong totalProcessingTimeMs = new AtomicLong(0);
+        private final AtomicLong lastBatchTps = new AtomicLong(0);
         private volatile long lastTpsLog = System.currentTimeMillis();
-        private volatile long lastSecondTime = System.currentTimeMillis();
 
         @PostConstruct
         public void init() {
@@ -142,46 +141,49 @@ import java.util.concurrent.atomic.AtomicLong;
         }
 
         /**
-         * Update TPS metrics
+         * Update TPS metrics - CORRECTED VERSION
+         * Only counts actual processing time, not idle time
          */
-        private void updateTpsMetrics(int eventsProcessed) {
-            eventsInLastSecond.addAndGet(eventsProcessed);
-            eventsInLastMinute.addAndGet(eventsProcessed);
+        private void updateTpsMetrics(int eventsProcessed, long processingTimeMs) {
+            // Add to total processing time (excludes idle time)
+            totalProcessingTimeMs.addAndGet(processingTimeMs);
+
+            // Calculate current batch TPS
+            long currentBatchTps = processingTimeMs > 0 ?
+                    Math.round((double) eventsProcessed / (processingTimeMs / 1000.0)) : 0;
+            lastBatchTps.set(currentBatchTps);
 
             long currentTime = System.currentTimeMillis();
 
-            // Reset per-second counter every second
-            if (currentTime - lastSecondTime >= 1000) {
-                long currentTps = eventsInLastSecond.getAndSet(0);
-                lastSecondTime = currentTime;
+            // Log TPS every 10 seconds
+            if (currentTime - lastTpsLog >= 10000) {
+                long totalEvents = totalEventsProcessed.get();
+                long totalProcessingSeconds = totalProcessingTimeMs.get() / 1000;
 
-                // Log TPS every 10 seconds
-                if (currentTime - lastTpsLog >= 10000) {
-                    long totalTime = currentTime - tpsStartTime;
-                    long totalEvents = totalEventsProcessed.get();
-                    double averageTps = totalTime > 0 ? (double) totalEvents / (totalTime / 1000.0) : 0;
+                double actualAverageTps = totalProcessingSeconds > 0 ?
+                        (double) totalEvents / totalProcessingSeconds : 0;
 
-                    logger.info("TPS METRICS: Current: {} events/sec, Average: {:.2f} events/sec, Total: {} events in {:.1f} seconds",
-                            currentTps, averageTps, totalEvents, totalTime / 1000.0);
-                    lastTpsLog = currentTime;
-                }
+                logger.info("TPS METRICS: Last Batch: {} events/sec, Processing Average: {:.2f} events/sec, Total: {} events, Processing Time: {}s",
+                        currentBatchTps, actualAverageTps, totalEvents, totalProcessingSeconds);
+                lastTpsLog = currentTime;
             }
         }
 
         /**
-         * Get TPS metrics
+         * Get CORRECTED TPS metrics
          */
         public Map<String, Object> getTpsMetrics() {
-            long currentTime = System.currentTimeMillis();
-            long totalTime = currentTime - tpsStartTime;
             long totalEvents = totalEventsProcessed.get();
+            long totalProcessingSeconds = totalProcessingTimeMs.get() / 1000;
+            long appRuntimeSeconds = (System.currentTimeMillis() - tpsStartTime) / 1000;
 
             Map<String, Object> tpsMetrics = new HashMap<>();
             tpsMetrics.put("totalEvents", totalEvents);
-            tpsMetrics.put("totalTimeSeconds", totalTime / 1000.0);
-            tpsMetrics.put("averageTps", totalTime > 0 ? (double) totalEvents / (totalTime / 1000.0) : 0);
-            tpsMetrics.put("currentSecondEvents", eventsInLastSecond.get());
-            tpsMetrics.put("runtimeSeconds", totalTime / 1000.0);
+            tpsMetrics.put("actualProcessingTimeSeconds", totalProcessingSeconds);
+            tpsMetrics.put("appRuntimeSeconds", appRuntimeSeconds);
+            tpsMetrics.put("actualAverageTps", totalProcessingSeconds > 0 ? (double) totalEvents / totalProcessingSeconds : 0);
+            tpsMetrics.put("lastBatchTps", lastBatchTps.get());
+            tpsMetrics.put("utilizationPercentage", appRuntimeSeconds > 0 ? (double) totalProcessingSeconds / appRuntimeSeconds * 100 : 0);
 
             return tpsMetrics;
         }
@@ -334,9 +336,13 @@ import java.util.concurrent.atomic.AtomicLong;
                 }
 
                 // ✅ CRITICAL: WAIT for batch completion before returning
-                logger.info("WAITING for batch {} completion ({} events)", batchId, events.size());
+                logger.info("BATCH START: {} ({} events) - Timer started", batchId, events.size());
+                long batchStartTime = System.currentTimeMillis();
 
                 boolean batchCompleted = waitForBatchCompletion(batchId, events.size());
+
+                long batchEndTime = System.currentTimeMillis();
+                long batchProcessingTimeMs = batchEndTime - batchStartTime;
 
                 if (batchCompleted) {
                     // ✅ Batch completed successfully - commit offsets
@@ -344,10 +350,11 @@ import java.util.concurrent.atomic.AtomicLong;
                     totalCommittedBatches.incrementAndGet();
                     totalEventsProcessed.addAndGet(events.size());
 
-                    // Update TPS metrics
-                    updateTpsMetrics(events.size());
+                    // ✅ Update TPS metrics with actual processing time
+                    updateTpsMetrics(events.size(), batchProcessingTimeMs);
 
-                    logger.info("BATCH COMPLETED & COMMITTED: {} ({} events)", batchId, events.size());
+                    logger.info("BATCH COMPLETED & COMMITTED: {} ({} events in {}ms)",
+                            batchId, events.size(), batchProcessingTimeMs);
                 } else {
                     // ❌ Batch failed or timed out - DO NOT commit offsets
                     logger.error("BATCH FAILED OR TIMED OUT: {} ({} events) - NO COMMIT", batchId, events.size());

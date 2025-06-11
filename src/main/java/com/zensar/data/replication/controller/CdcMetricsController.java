@@ -1,4 +1,4 @@
-package com.zensar.data.replication.enhanced.controller;
+package com.zensar.data.replication.controller;
 
 import com.zensar.data.replication.enhanced.consumer.DedicatedCdcConsumer;
 import com.zensar.data.replication.enhanced.pool.PrimaryKeyHasherService;
@@ -271,7 +271,7 @@ public class CdcMetricsController {
     }
 
     /**
-     * Get TPS (Transactions Per Second) metrics
+     * Get CORRECTED TPS (Transactions Per Second) metrics
      */
     @GetMapping("/tps")
     public ResponseEntity<Map<String, Object>> getTpsMetrics() {
@@ -281,21 +281,27 @@ public class CdcMetricsController {
 
             Map<String, Object> tpsData = new HashMap<>();
 
-            // Consumer TPS (events received and committed)
-            double consumerTps = (Double) consumerMetrics.getOrDefault("averageTps", 0.0);
+            // Consumer TPS (CORRECTED - only actual processing time)
+            double actualTps = (Double) consumerMetrics.getOrDefault("actualAverageTps", 0.0);
+            long lastBatchTps = (Long) consumerMetrics.getOrDefault("lastBatchTps", 0L);
             long totalEvents = (Long) consumerMetrics.getOrDefault("totalEvents", 0L);
-            double runtimeSeconds = (Double) consumerMetrics.getOrDefault("runtimeSeconds", 0.0);
+            long processingTimeSeconds = (Long) consumerMetrics.getOrDefault("actualProcessingTimeSeconds", 0L);
+            long appRuntimeSeconds = (Long) consumerMetrics.getOrDefault("appRuntimeSeconds", 0L);
+            double utilization = (Double) consumerMetrics.getOrDefault("utilizationPercentage", 0.0);
 
             // Worker TPS (SQL statements executed)
             long totalStatements = (Long) workerMetrics.get("totalStatementsExecuted");
-            double workerTps = runtimeSeconds > 0 ? totalStatements / runtimeSeconds : 0.0;
+            double workerTps = processingTimeSeconds > 0 ? (double) totalStatements / processingTimeSeconds : 0.0;
 
             tpsData.put("timestamp", LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
-            tpsData.put("consumerTps", String.format("%.2f events/sec", consumerTps));
+            tpsData.put("actualProcessingTps", String.format("%.2f events/sec", actualTps));
+            tpsData.put("lastBatchTps", lastBatchTps + " events/sec");
             tpsData.put("workerTps", String.format("%.2f statements/sec", workerTps));
             tpsData.put("totalEventsProcessed", totalEvents);
             tpsData.put("totalStatementsExecuted", totalStatements);
-            tpsData.put("runtimeSeconds", String.format("%.1f seconds", runtimeSeconds));
+            tpsData.put("actualProcessingTime", processingTimeSeconds + " seconds");
+            tpsData.put("appRuntime", appRuntimeSeconds + " seconds");
+            tpsData.put("processingUtilization", String.format("%.1f%%", utilization));
             tpsData.put("efficiency", totalEvents > 0 ? String.format("%.2f%%", (double) totalStatements / totalEvents * 100) : "0.00%");
 
             return ResponseEntity.ok(tpsData);
