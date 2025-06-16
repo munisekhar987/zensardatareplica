@@ -27,24 +27,24 @@ spec:
             - name: KAFKA_GROUP_ID
               value: "dlv-all-group"
             - name: CDC_TOPICS
-              value: "mydlv.dlv.reservation,mydlv.dlv.timeslot,mydlv.dlv.delivery_building,mydlv.dlv.delivery_location,mydlv.dlv.delivery_building_detail"
+              value: "pt.fdstore_prda.delivery_building,pt.fdstore_prda.delivery_location,pt.fdstore_prda.delivery_building_detail"
             - name: CDC_TOPIC_TABLE_MAPPINGS
-              value: "{'mydlv.dlv.reservation': 'RESERVATION', 'mydlv.dlv.timeslot': 'TIMESLOT', 'mydlv.dlv.delivery_building': 'DELIVERY_BUILDING', 'mydlv.dlv.delivery_location': 'DELIVERY_LOCATION', 'mydlv.dlv.delivery_building_detail': 'DELIVERY_BUILDING_DETAIL'}"
+              value: "{'pt.fdstore_prda.reservation': 'RESERVATION', 'pt.fdstore_prda.timeslot': 'TIMESLOT', 'pt.fdstore_prda.delivery_building': 'DELIVERY_BUILDING', 'pt.fdstore_prda.delivery_location': 'DELIVERY_LOCATION', 'pt.fdstore_prda.delivery_building_detail': 'DELIVERY_BUILDING_DETAIL'}"
             - name: CDC_TABLE_PRIMARY_KEYS
               value: "{'RESERVATION': 'id', 'TIMESLOT': 'id', 'DELIVERY_BUILDING': 'id', 'DELIVERY_LOCATION': 'id', 'DELIVERY_BUILDING_DETAIL': 'delivery_building_id'}"
             - name: SPRING_KAFKA_CONSUMER_MAX_POLL_RECORDS
               value: "800"
             - name: ORACLE_SCHEMA
-              value: "DLV"
+              value: "FDSTORE_PRDA"
             - name: POSTGRES_SCHEMA
-              value: "dlv"
+              value: "fdstore_prda"
           resources:
             requests:
               memory: "2Gi"
-              cpu: "1000m"
-            limits:
-              memory: "4Gi"
               cpu: "2000m"
+            limits:
+              memory: "3Gi"
+              cpu: "4000m"
           livenessProbe:
             httpGet:
               path: /actuator/health
