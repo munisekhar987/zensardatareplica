@@ -72,7 +72,7 @@ services:
     environment:
       ORACLE_PASSWORD: Oracle123
       ORACLE_DATABASE: XE
-      ORACLE_USER: dlv
+      ORACLE_USER: SYSTEM
       ORACLE_PASSWORD_DLV: Oracle123
     healthcheck:
       test: ["CMD", "healthcheck.sh"]
