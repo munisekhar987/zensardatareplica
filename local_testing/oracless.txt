@@ -1,0 +1,32 @@
+-- Oracle Database Simple Test Script
+-- Default SYSTEM schema, no custom schema creation
+
+-- =============================================
+-- TABLE 1: WITH PRIMARY KEY
+-- =============================================
+CREATE TABLE CUSTOMERS (
+    CUSTOMER_ID NUMBER(10) PRIMARY KEY,
+    FIRST_NAME VARCHAR2(50) NOT NULL,
+    LAST_NAME VARCHAR2(50) NOT NULL,
+    EMAIL VARCHAR2(100),
+    PHONE VARCHAR2(20),
+    CITY VARCHAR2(50),
+    STATE VARCHAR2(50),
+    STATUS VARCHAR2(20) DEFAULT 'ACTIVE',
+    CREATED_DATE DATE DEFAULT SYSDATE
+);
+
+-- =============================================
+-- TABLE 2: WITHOUT PRIMARY KEY
+-- =============================================
+CREATE TABLE ORDER_LOGS (
+    ORDER_NUMBER VARCHAR2(20),
+    CUSTOMER_ID NUMBER(10),
+    PRODUCT_NAME VARCHAR2(100),
+    QUANTITY NUMBER(5),
+    UNIT_PRICE NUMBER(10,2),
+    STATUS VARCHAR2(20) DEFAULT 'PENDING',
+    ORDER_DATE DATE DEFAULT SYSDATE
+);
+
+COMMIT;

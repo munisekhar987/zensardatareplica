@@ -1,0 +1,30 @@
+-- PostgreSQL Database Simple Test Script
+-- Default public schema
+
+-- =============================================
+-- TABLE 1: WITH PRIMARY KEY
+-- =============================================
+CREATE TABLE customers (
+    customer_id SERIAL PRIMARY KEY,
+    first_name VARCHAR(50) NOT NULL,
+    last_name VARCHAR(50) NOT NULL,
+    email VARCHAR(100),
+    phone VARCHAR(20),
+    city VARCHAR(50),
+    state VARCHAR(50),
+    status VARCHAR(20) DEFAULT 'ACTIVE',
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- =============================================
+-- TABLE 2: WITHOUT PRIMARY KEY
+-- =============================================
+CREATE TABLE order_logs (
+    order_number VARCHAR(20),
+    customer_id INTEGER,
+    product_name VARCHAR(100),
+    quantity INTEGER,
+    unit_price DECIMAL(10,2),
+    status VARCHAR(20) DEFAULT 'PENDING',
+    order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
