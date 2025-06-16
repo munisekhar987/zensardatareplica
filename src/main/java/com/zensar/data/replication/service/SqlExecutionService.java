@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import javax.sql.DataSource;
 import jakarta.annotation.PostConstruct;
 import java.math.BigDecimal;
 import java.sql.*;
@@ -21,19 +22,11 @@ import java.util.*;
  * Enhanced to handle tables without primary keys that allow duplicates.
  * Enhanced with UDT support for Oracle.
  * Delegates operations on tables without primary keys to NoPrimaryKeyTableService.
+ * Updated to use connection pool instead of direct DriverManager connections.
  */
 @Service
 public class SqlExecutionService {
     private static final Logger logger = LoggerFactory.getLogger(SqlExecutionService.class);
-
-    @Value("${oracle.db.url}")
-    private String dbUrl;
-
-    @Value("${oracle.db.username}")
-    private String dbUsername;
-
-    @Value("${oracle.db.password}")
-    private String dbPassword;
 
     @Value("${oracle.db.schema:}")
     private String dbSchema;
@@ -46,6 +39,9 @@ public class SqlExecutionService {
     private Map<String, String> tablePrimaryKeys;
 
     private final SimpleDateFormat timestampFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+
+    @Autowired
+    private DataSource dataSource;
 
     @Autowired
     private CdcValueExtractorService valueExtractorService;
@@ -485,7 +481,7 @@ public class SqlExecutionService {
         String sqlWithValues = constructDebugSql(sql, params);
         logger.info("SQL with values: {}", sqlWithValues);
 
-        try (Connection connection = DriverManager.getConnection(dbUrl, dbUsername, dbPassword);
+        try (Connection connection = dataSource.getConnection();
              PreparedStatement statement = connection.prepareStatement(sql)) {
 
             // Set parameters
@@ -598,7 +594,7 @@ public class SqlExecutionService {
     }
 
     /**
-     * Execute SQL statement with parameters.
+     * Execute SQL statement with parameters using connection pool.
      * Made public so that it can be used by NoPrimaryKeyTableService.
      */
     public void executeStatement(String sql, List<Object> params) {
@@ -609,7 +605,7 @@ public class SqlExecutionService {
         String sqlWithValues = constructDebugSql(sql, params);
         logger.info("SQL with values: {}", sqlWithValues);
 
-        try (Connection connection = DriverManager.getConnection(dbUrl, dbUsername, dbPassword);
+        try (Connection connection = dataSource.getConnection();
              PreparedStatement statement = connection.prepareStatement(sql)) {
 
             // Set parameters
@@ -769,7 +765,7 @@ public class SqlExecutionService {
      * Check if a table exists and report database information for troubleshooting.
      */
     private void checkTableExistence(String tableName) {
-        try (Connection connection = DriverManager.getConnection(dbUrl, dbUsername, dbPassword)) {
+        try (Connection connection = dataSource.getConnection()) {
             DatabaseMetaData metaData = connection.getMetaData();
 
             // Show database information
@@ -897,5 +893,13 @@ public class SqlExecutionService {
         } else {
             return param.toString();
         }
+    }
+
+    /**
+     * Get a connection from the DataSource pool for use by other services.
+     * This method allows NoPrimaryKeyTableService and other services to use the same connection pool.
+     */
+    public Connection getConnection() throws SQLException {
+        return dataSource.getConnection();
     }
 }

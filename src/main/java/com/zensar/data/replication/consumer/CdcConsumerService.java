@@ -3,10 +3,7 @@ package com.zensar.data.replication.consumer;
 import com.zensar.data.replication.model.CdcEvent;
 import com.zensar.data.replication.model.FieldTypeInfo;
 import com.zensar.data.replication.model.TopicTableMapping;
-import com.zensar.data.replication.service.PostgresSourceService;
-import com.zensar.data.replication.service.SchemaParserService;
-import com.zensar.data.replication.service.SqlExecutionService;
-import com.zensar.data.replication.service.TopicMappingService;
+import com.zensar.data.replication.service.*;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -15,6 +12,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
@@ -36,6 +34,8 @@ public class CdcConsumerService {
     private final SqlExecutionService sqlExecutionService;
     private final TopicMappingService topicMappingService;
     private final PostgresSourceService postgresSourceService;
+    @Autowired
+    private KafkaMetrics metrics;
 
     @Autowired
     public CdcConsumerService(
@@ -55,61 +55,111 @@ public class CdcConsumerService {
      * Consume CDC events from Kafka, using a comma-separated list of topics.
      */
     @KafkaListener(topics = "#{'${cdc.kafka.topics}'.split(',')}")
-    public void consume(ConsumerRecord<String, String> message) {
-        try {
-            String topic = message.topic();
-            String eventMessage = message.value();
-            logger.info("CDC Event Received from topic {}", topic);
-            logger.debug("Event payload: {}", eventMessage);
+    public void consume(ConsumerRecord<String, String> message, Acknowledgment acknowledgment) {
+        long startTime = System.currentTimeMillis();
+        int maxRetries = 1;
+        int retryCount = 0;
 
-            if (eventMessage == null) {
-                logger.warn("Skipping as empty event from topic: {}", topic);
-                return;
-            }
+        while (retryCount <= maxRetries) {
+            try {
+                String topic = message.topic();
+                String eventMessage = message.value();
 
-            // Parse the event message
-            JsonNode rootNode = objectMapper.readTree(eventMessage);
+                if (retryCount > 0) {
+                    logger.warn("Retrying message processing for topic {} (attempt {}/{})",
+                            topic, retryCount + 1, maxRetries + 1);
+                    metrics.recordRetry();
+                }
 
-            // Get table mapping for this topic
-            TopicTableMapping mapping = topicMappingService.getMappingForTopic(topic);
-            if (mapping == null) {
-                logger.warn("No table mapping configured for topic: {}", topic);
+                logger.info("CDC Event Received from topic {}", topic);
+                logger.debug("Event payload: {}", eventMessage);
 
-                // Try to extract table name from source metadata as fallback
-                String tableName = extractTableNameFromEventSource(rootNode);
-                if (tableName != null) {
-                    logger.info("Using table name extracted from source metadata: {}", tableName);
-                    mapping = new TopicTableMapping(topic, tableName);
-                } else {
-                    logger.error("Cannot process event - unable to determine target table for topic: {}", topic);
+                if (eventMessage == null) {
+                    logger.warn("Skipping as empty event from topic: {}", topic);
+                    acknowledgment.acknowledge();
                     return;
                 }
+
+                // Parse the event message
+                JsonNode rootNode = objectMapper.readTree(eventMessage);
+
+                // Get table mapping for this topic
+                TopicTableMapping mapping = topicMappingService.getMappingForTopic(topic);
+                if (mapping == null) {
+                    logger.warn("No table mapping configured for topic: {}", topic);
+
+                    // Try to extract table name from source metadata as fallback
+                    String tableName = extractTableNameFromEventSource(rootNode);
+                    if (tableName != null) {
+                        logger.info("Using table name extracted from source metadata: {}", tableName);
+                        mapping = new TopicTableMapping(topic, tableName);
+                    } else {
+                        logger.error("Cannot process event - unable to determine target table for topic: {}", topic);
+                        acknowledgment.acknowledge();
+                        return;
+                    }
+                }
+
+                // Create CDC event with the resolved table name
+                CdcEvent cdcEvent = parseEvent(rootNode, topic, mapping.getTableName());
+                if (cdcEvent == null) {
+                    logger.warn("Failed to parse CDC event from topic: {}", topic);
+                    acknowledgment.acknowledge();
+                    return;
+                }
+
+                // Extract schema information
+                Map<String, FieldTypeInfo> fieldTypeMap = schemaParser.buildFieldTypeMap(rootNode.get("schema"));
+
+                // Check if this table has UDT columns that need to be fetched from PostgreSQL
+                if (postgresSourceService.isUdtTable(cdcEvent.getTableName())) {
+                    logger.info("Table {} has UDT columns. Fetching complete row data from PostgreSQL.",
+                            cdcEvent.getTableName());
+
+                    // Enhance the CDC event with complete data from PostgreSQL
+                    enhanceCdcEventWithPostgresData(cdcEvent);
+                }
+
+                // Process the event based on operation type
+                processEvent(cdcEvent, fieldTypeMap);
+
+                // Record successful processing with timing
+                long processingTime = System.currentTimeMillis() - startTime;
+                metrics.recordProcessing(processingTime);
+
+                // Only acknowledge after successful processing
+                logger.debug("Successfully processed event from topic: {}. Acknowledging message.", topic);
+                acknowledgment.acknowledge();
+
+                return; // Success - exit retry loop
+
+            } catch (Exception e) {
+                retryCount++;
+
+                if (retryCount <= maxRetries) {
+                    logger.warn("Error processing Kafka message from topic {} (attempt {}/{}): {}. Retrying...",
+                            message.topic(), retryCount, maxRetries + 1, e.getMessage());
+
+                    try {
+                        Thread.sleep(1000); // 1 second delay
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        logger.error("Retry interrupted for topic: {}", message.topic());
+                        break;
+                    }
+                } else {
+                    // Record failure and stop consumer
+                    metrics.recordFailure();
+                    metrics.stop();
+
+                    logger.error("CRITICAL ERROR: Failed to process Kafka message from topic {} after {} attempts: {}",
+                            message.topic(), maxRetries + 1, e.getMessage(), e);
+                    logger.error("STOPPING CONSUMER: Cannot proceed with further message processing.");
+
+                    throw new RuntimeException("Critical error processing Kafka message from topic: " +
+                            message.topic() + " after " + (maxRetries + 1) + " attempts. Consumer stopped.", e);
+                }
             }
-
-            // Create CDC event with the resolved table name
-            CdcEvent cdcEvent = parseEvent(rootNode, topic, mapping.getTableName());
-            if (cdcEvent == null) {
-                logger.warn("Failed to parse CDC event from topic: {}", topic);
-                return;
-            }
-
-            // Extract schema information
-            Map<String, FieldTypeInfo> fieldTypeMap = schemaParser.buildFieldTypeMap(rootNode.get("schema"));
-
-            // Check if this table has UDT columns that need to be fetched from PostgreSQL
-            if (postgresSourceService.isUdtTable(cdcEvent.getTableName())) {
-                logger.info("Table {} has UDT columns. Fetching complete row data from PostgreSQL.",
-                        cdcEvent.getTableName());
-
-                // Enhance the CDC event with complete data from PostgreSQL
-                enhanceCdcEventWithPostgresData(cdcEvent);
-            }
-
-            // Process the event based on operation type
-            processEvent(cdcEvent, fieldTypeMap);
-
-        } catch (Exception e) {
-            logger.error("Error processing Kafka message: {}", e.getMessage(), e);
         }
     }
 
