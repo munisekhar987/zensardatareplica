@@ -29,7 +29,7 @@ spec:
             - name: CDC_TOPICS
               value: "pt.fdstore_prda.delivery_building,pt.fdstore_prda.delivery_location,pt.fdstore_prda.delivery_building_detail"
             - name: CDC_TOPIC_TABLE_MAPPINGS
-              value: "{'pt.fdstore_prda.reservation': 'RESERVATION', 'pt.fdstore_prda.timeslot': 'TIMESLOT', 'pt.fdstore_prda.delivery_building': 'DELIVERY_BUILDING', 'pt.fdstore_prda.delivery_location': 'DELIVERY_LOCATION', 'pt.fdstore_prda.delivery_building_detail': 'DELIVERY_BUILDING_DETAIL'}"
+              value: "{'pt.fdstore_prda.delivery_building': 'DELIVERY_BUILDING', 'pt.fdstore_prda.delivery_location': 'DELIVERY_LOCATION', 'pt.fdstore_prda.delivery_building_detail': 'DELIVERY_BUILDING_DETAIL'}"
             - name: CDC_TABLE_PRIMARY_KEYS
               value: "{'DELIVERY_BUILDING': 'id', 'DELIVERY_LOCATION': 'id', 'DELIVERY_BUILDING_DETAIL': 'delivery_building_id'}"
             - name: SPRING_KAFKA_CONSUMER_MAX_POLL_RECORDS
