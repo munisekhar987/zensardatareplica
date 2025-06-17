@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: cdc-consumer-dlv-reservation-service
+  namespace: cdc-consumers
+spec:
+  selector:
+    app: cdc-consumer-dlv-reservation
+  ports:
+    - protocol: TCP
+      port: 9095
+      targetPort: 9095
+  type: ClusterIP
