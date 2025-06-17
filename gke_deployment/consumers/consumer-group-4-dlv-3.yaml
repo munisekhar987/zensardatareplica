@@ -1,17 +1,17 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: cdc-consumer-dlv-all
+  name: cdc-consumer-dlv-3
   namespace: cdc-consumers
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: cdc-consumer-dlv-all
+      app: cdc-consumer-dlv-3
   template:
     metadata:
       labels:
-        app: cdc-consumer-dlv-all
+        app: cdc-consumer-dlv-3
     spec:
       containers:
         - name: cdc-consumer
@@ -25,13 +25,13 @@ spec:
                 name: cdc-consumer-secrets
           env:
             - name: KAFKA_GROUP_ID
-              value: "dlv-all-group"
+              value: "dlv-all-3-tables"
             - name: CDC_TOPICS
               value: "pt.fdstore_prda.delivery_building,pt.fdstore_prda.delivery_location,pt.fdstore_prda.delivery_building_detail"
             - name: CDC_TOPIC_TABLE_MAPPINGS
               value: "{'pt.fdstore_prda.reservation': 'RESERVATION', 'pt.fdstore_prda.timeslot': 'TIMESLOT', 'pt.fdstore_prda.delivery_building': 'DELIVERY_BUILDING', 'pt.fdstore_prda.delivery_location': 'DELIVERY_LOCATION', 'pt.fdstore_prda.delivery_building_detail': 'DELIVERY_BUILDING_DETAIL'}"
             - name: CDC_TABLE_PRIMARY_KEYS
-              value: "{'RESERVATION': 'id', 'TIMESLOT': 'id', 'DELIVERY_BUILDING': 'id', 'DELIVERY_LOCATION': 'id', 'DELIVERY_BUILDING_DETAIL': 'delivery_building_id'}"
+              value: "{'DELIVERY_BUILDING': 'id', 'DELIVERY_LOCATION': 'id', 'DELIVERY_BUILDING_DETAIL': 'delivery_building_id'}"
             - name: SPRING_KAFKA_CONSUMER_MAX_POLL_RECORDS
               value: "800"
             - name: ORACLE_SCHEMA
@@ -41,10 +41,10 @@ spec:
           resources:
             requests:
               memory: "2Gi"
-              cpu: "2000m"
+              cpu: "4000m"
             limits:
               memory: "3Gi"
-              cpu: "4000m"
+              cpu: "6000m"
           livenessProbe:
             httpGet:
               path: /actuator/health

@@ -1,23 +1,21 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: cdc-consumer-transp-high-orders
+  name: cdc-consumer-dlv-reservation
   namespace: cdc-consumers
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: cdc-consumer-transp-high-orders
+      app: cdc-consumer-dlv-reservation
   template:
     metadata:
       labels:
-        app: cdc-consumer-transp-high-orders
-        schema: transp
-        group: high-orders
+        app: cdc-consumer-dlv-reservation
     spec:
       containers:
         - name: cdc-consumer
-          image: gcr.io/fd-pr-transapp-dev-use4-01/cdc_consumer:latest
+          image: sekharmuni/cdc-consumer:latest
           ports:
             - containerPort: 9095
           envFrom:
@@ -27,27 +25,25 @@ spec:
                 name: cdc-consumer-secrets
           env:
             - name: KAFKA_GROUP_ID
-              value: "transp-high-orders-group"
+              value: "dlv-reservation"
             - name: CDC_TOPICS
-              value: "mytestp.transp.fdx_orderaction"
+              value: "pt.fdstore_prda.reservation"
             - name: CDC_TOPIC_TABLE_MAPPINGS
-              value: "{'mytestp.transp.fdx_orderaction': 'FDX_ORDERACTION'}"
+              value: "{'pt.fdstore_prda.reservation': 'RESERVATION'}"
             - name: CDC_TABLE_PRIMARY_KEYS
-              value: "{'FDX_ORDERACTION': 'order_action_id'}"
+              value: "{'RESERVATION': 'id'}"
             - name: SPRING_KAFKA_CONSUMER_MAX_POLL_RECORDS
-              value: "2000"
-            - name: SPRING_KAFKA_CONSUMER_FETCH_MIN_BYTES
-              value: "100000"
+              value: "800"
             - name: ORACLE_SCHEMA
-              value: "DLV"
+              value: "FDSTORE_PRDA"
             - name: POSTGRES_SCHEMA
-              value: "dlv"
+              value: "fdstore_prda"
           resources:
             requests:
-              memory: "4Gi"
+              memory: "2Gi"
               cpu: "2000m"
             limits:
-              memory: "8Gi"
+              memory: "3Gi"
               cpu: "4000m"
           livenessProbe:
             httpGet:

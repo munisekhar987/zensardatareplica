@@ -1,19 +1,19 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: cdc-consumer-transp-high-distribution
+  name: cdc-consumer-mis
   namespace: cdc-consumers
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: cdc-consumer-transp-high-distribution
+      app: cdc-consumer-mis
   template:
     metadata:
       labels:
-        app: cdc-consumer-transp-high-distribution
-        schema: transp
-        group: high-distribution
+        app: cdc-consumer-mis
+        schema: fdtore_prda
+        group: mis
     spec:
       containers:
         - name: cdc-consumer
@@ -27,25 +27,37 @@ spec:
                 name: cdc-consumer-secrets
           env:
             - name: KAFKA_GROUP_ID
-              value: "transp-high-distribution-group-2"
+              value: "mis-delivery-event"
             - name: CDC_TOPICS
-              value: "pt.fdstore_prda.tip_distribution,pt.fdstore_prda.fdx_orderaction"
+              value: "pt.fdstore_prda.delivery_event"
             - name: CDC_TOPIC_TABLE_MAPPINGS
-              value: "{'pt.fdstore_prda.tip_distribution': 'TIP_DISTRIBUTION','pt.fdstore_prda.fdx_orderaction': 'FDX_ORDERACTION'}"
+              value: "{'pt.fdstore_prda.fdx_orderaction': 'DELIVERY_EVENT'}"
             - name: CDC_TABLE_PRIMARY_KEYS
-              value: "{'FDX_ORDERACTION': 'id'}"
+              value: "{'DELIVERY_EVENT': 'erporder_id,event,event_timestamp'}"
             - name: SPRING_KAFKA_CONSUMER_MAX_POLL_RECORDS
-              value: "1500"
-            - name: CDC_ALLOW_DUPLICATES
-              value: "TIP_DISTRIBUTION"
+              value: "2000"
+            - name: SPRING_KAFKA_CONSUMER_FETCH_MIN_BYTES
+              value: "100000"
             - name: ORACLE_SCHEMA
               value: "FDSTORE_PRDA"
             - name: POSTGRES_SCHEMA
               value: "fdstore_prda"
           resources:
             requests:
-              memory: "2Gi"
+              memory: "1Gi"
               cpu: "2000m"
             limits:
-              memory: "4Gi"
+              memory: "2Gi"
               cpu: "4000m"
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 9095
+            initialDelaySeconds: 120
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 9095
+            initialDelaySeconds: 60
+            periodSeconds: 15
