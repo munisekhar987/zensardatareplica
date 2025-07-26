@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: cdc-consumer-devtest-fdx_order
+  name: cdc-consumer-devtest-fdxorder
   namespace: enhanced-consumers
 spec:
   replicas: 1
