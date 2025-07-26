@@ -27,9 +27,9 @@ spec:
                 name: cdc-consumer-secrets
           env:
             - name: KAFKA_GROUP_ID
-              value: "transp-medium-low-group"
+              value: "transp-medium-low-group-2"
             - name: CDC_TOPICS
-              value: "devtest.transp.deliveryconfirm,devtest.transp.handoff_batchstop,devtest.transp.fdx_trip_order,devtest.transp.fdx_trip,devtest.transp.fdx_staff,devtest.transp.fdx_trip_staff,devtest.transp.handoff_batchroute,devtest.transp.handoff_batchdispatchex,devtest.transp.handoff_batchaction,devtest.transp.handoff_batchtrailer,devtest.transp.handoff_batchsession,devtest.transp.handoff_batch,devtest.transp.handoff_batchdepotschedule,devtest.transp.handoff_batchroute_breaks,devtest.transp.dispatch,devtest.transp.dispatch_resource,devtest.transp.tip_distribution_batch"
+              value: "devtest.transp.deliveryconfirm,devtest.transp.handoff_batchstop,devtest.transp.fdx_trip_order,devtest.transp.fdx_trip,devtest.transp.fdx_staff,devtest.transp.fdx_trip_staff,devtest.transp.handoff_batchroute,devtest.transp.handoff_batchaction,devtest.transp.handoff_batchtrailer,devtest.transp.handoff_batchsession,devtest.transp.handoff_batch,devtest.transp.dispatch,devtest.transp.dispatch_resource,devtest.transp.tip_distribution_batch"
             - name: CDC_TOPIC_TABLE_MAPPINGS
               value: "{
                   'devtest.transp.deliveryconfirm': 'DELIVERYCONFIRM',
@@ -70,7 +70,7 @@ spec:
             - name: POSTGRES_UDT_TYPE_MAPPING
               value: "{'handoff_routing_route_no':'HANDOFF_ROUTING_ROUTE_NO', 'handoff_roadnet_route_no':'HANDOFF_ROADNET_ROUTE_NO'}"
             - name: POSTGRES_UDT_COLUMN_MAPPING
-              value: "{'HANDOFF_BATCHROUTE.ROUTING_ROUTE_NO':'handoff_routing_route_no', 'HANDOFF_BATCHROUTE.ROADNET_ROUTE_NO':'handoff_roadnet_route_no'}"
+              value: "{'HANDOFF_BATCHROUTE.ROUTING_ROUTE_NO':'handoff_routing_route_no', 'HANDOFF_BATCHROUTE.RN_ROUTE_ID':'handoff_roadnet_route_no'}"
             - name: SPRING_KAFKA_CONSUMER_MAX_POLL_RECORDS
               value: "1000"
             - name: ORACLE_SCHEMA
