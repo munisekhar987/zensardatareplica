@@ -23,7 +23,7 @@ import java.util.Map;
  * Main service for consuming CDC events from Kafka and coordinating processing.
  * Enhanced to dynamically handle multiple topics and tables using configurable mappings.
  * Added support for UDT column handling by fetching complete rows from PostgreSQL.
- * Enhanced with case-insensitive field handling.
+ * Enhanced with case-insensitive field handling and column-specific UDT conversion.
  */
 @Service
 public class CdcConsumerService {
@@ -166,7 +166,7 @@ public class CdcConsumerService {
     /**
      * Enhance the CDC event with complete data from PostgreSQL, including UDT columns.
      * This method enriches the afterNode and beforeNode with data from PostgreSQL.
-     * Enhanced with case-insensitive field name handling.
+     * Enhanced with case-insensitive field name handling and column-specific UDT conversion.
      */
     private void enhanceCdcEventWithPostgresData(CdcEvent cdcEvent) {
         try {
@@ -198,7 +198,7 @@ public class CdcConsumerService {
 
     /**
      * Enhance a JSON node with data from PostgreSQL
-     * Enhanced with case-insensitive field name handling.
+     * Enhanced with case-insensitive field name handling and column-specific UDT conversion.
      */
     private void enhanceJsonNode(ObjectNode node, Map<String, Object> postgresData) {
         // Create a deep copy to avoid concurrent modification
@@ -217,6 +217,14 @@ public class CdcConsumerService {
             // Skip if the column already exists in the node (case-insensitive check)
             if (hasFieldCaseInsensitive(node, columnName)) {
                 logger.debug("Column {} already exists in the node (case-insensitive match). Not overwriting.", columnName);
+                continue;
+            }
+
+            // **KEY ADDITION**: Handle UDT values that were already converted by PostgresSourceService
+            if (value instanceof String && isUdtConstructorString((String) value)) {
+                // This is already a converted UDT constructor string from PostgreSQL
+                logger.debug("Adding UDT constructor value for column {}: {}", columnName, value);
+                node.put(columnName, (String) value);
                 continue;
             }
 
@@ -246,6 +254,20 @@ public class CdcConsumerService {
         }
 
         logger.debug("Enhanced node with {} columns from PostgreSQL", data.size());
+    }
+
+    /**
+     * Check if a string appears to be a UDT constructor string.
+     */
+    private boolean isUdtConstructorString(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return false;
+        }
+
+        return value.startsWith("TRANSP.HANDOFF_ROUTING_ROUTE_NO(") ||
+                value.startsWith("TRANSP.HANDOFF_ROADNET_ROUTE_NO(") ||
+                value.startsWith("HANDOFF_ROUTING_ROUTE_NO(") ||
+                value.startsWith("HANDOFF_ROADNET_ROUTE_NO(");
     }
 
     /**

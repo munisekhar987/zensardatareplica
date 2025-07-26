@@ -626,6 +626,91 @@ public class SqlExecutionService {
      * Set a parameter in a prepared statement with appropriate type handling.
      * Enhanced to handle UDT objects and SQL expressions.
      */
+//    private void setStatementParameter(PreparedStatement statement, int index, Object param) throws SQLException {
+//        if (param == null) {
+//            logger.debug("Setting parameter #{} to NULL", index);
+//            statement.setNull(index, Types.NULL);
+//        } else if (param instanceof String) {
+//            String strParam = (String) param;
+//
+//            // Check if this appears to be a UDT constructor string (e.g., "HANDOFF_ROUTING_ROUTE_NO('123','456')")
+//            if ((strParam.startsWith("HANDOFF_ROUTING_ROUTE_NO(") && strParam.endsWith(")")) ||
+//                    (strParam.startsWith("HANDOFF_ROADNET_ROUTE_NO(") && strParam.endsWith(")"))) {
+//
+//                logger.debug("Setting parameter #{} as Oracle UDT constructor: {}", index, strParam);
+//
+//                // For Oracle UDTs, we need to pass the constructor string directly to Oracle for evaluation
+//                // Create a PreparedStatement that executes an expression
+//                // We'll use a special Oracle syntax that allows expression evaluation
+//
+//                // For Oracle 12c+, we can use the following approach:
+//                // Create a query that selects the UDT constructor expression
+//                // E.g., SELECT HANDOFF_ROUTING_ROUTE_NO('123','456') AS column_value FROM DUAL
+//
+//                Connection conn = statement.getConnection();
+//                String udtConstructor = strParam;
+//
+//                try {
+//                    // Extract the UDT type name from the constructor string
+//                    int openParenIndex = udtConstructor.indexOf('(');
+//                    String udtTypeName = udtConstructor.substring(0, openParenIndex);
+//
+//                    // Create a query to evaluate the UDT constructor
+//                    String query = "SELECT " + udtConstructor + " AS column_value FROM DUAL";
+//
+//                    try (Statement selectStmt = conn.createStatement();
+//                         ResultSet rs = selectStmt.executeQuery(query)) {
+//
+//                        if (rs.next()) {
+//                            // Get the constructed UDT object
+//                            Object udtObject = rs.getObject(1);
+//
+//                            // Set the parameter using the UDT object
+//                            logger.debug("Setting parameter #{} with UDT object from database", index);
+//                            statement.setObject(index, udtObject);
+//                        } else {
+//                            // Fall back to setting as string if evaluation fails
+//                            logger.warn("Failed to evaluate UDT constructor, falling back to string parameter");
+//                            statement.setString(index, strParam);
+//                        }
+//                    }
+//                } catch (SQLException e) {
+//                    // If the UDT constructor evaluation fails, fall back to setting as string
+//                    logger.warn("Exception while evaluating UDT constructor ({}), falling back to string parameter: {}",
+//                            udtConstructor, e.getMessage());
+//                    statement.setString(index, strParam);
+//                }
+//            } else {
+//                logger.debug("Setting parameter #{} to String: {}", index, strParam);
+//                statement.setString(index, strParam);
+//            }
+//        } else if (param instanceof Integer) {
+//            logger.debug("Setting parameter #{} to Integer: {}", index, param);
+//            statement.setInt(index, (Integer) param);
+//        } else if (param instanceof Long) {
+//            logger.debug("Setting parameter #{} to Long: {}", index, param);
+//            statement.setLong(index, (Long) param);
+//        } else if (param instanceof Double) {
+//            logger.debug("Setting parameter #{} to Double: {}", index, param);
+//            statement.setDouble(index, (Double) param);
+//        } else if (param instanceof BigDecimal) {
+//            logger.debug("Setting parameter #{} to BigDecimal: {}", index, param);
+//            statement.setBigDecimal(index, (BigDecimal) param);
+//        } else if (param instanceof java.util.Date) {
+//            logger.debug("Setting parameter #{} to Timestamp from java.util.Date: {}", index, timestampFormat.format(param));
+//            statement.setTimestamp(index, new Timestamp(((java.util.Date) param).getTime()));
+//        } else if (param instanceof Timestamp) {
+//            logger.debug("Setting parameter #{} to Timestamp: {}", index, ((Timestamp) param).toString());
+//            statement.setTimestamp(index, (Timestamp) param);
+//        } else if (param instanceof Boolean) {
+//            logger.debug("Setting parameter #{} to Boolean: {}", index, param);
+//            statement.setBoolean(index, (Boolean) param);
+//        } else {
+//            logger.debug("Setting parameter #{} to Object: {} (type: {})", index, param, param.getClass().getName());
+//            statement.setObject(index, param);
+//        }
+//    }
+
     private void setStatementParameter(PreparedStatement statement, int index, Object param) throws SQLException {
         if (param == null) {
             logger.debug("Setting parameter #{} to NULL", index);
@@ -633,30 +718,16 @@ public class SqlExecutionService {
         } else if (param instanceof String) {
             String strParam = (String) param;
 
-            // Check if this appears to be a UDT constructor string (e.g., "HANDOFF_ROUTING_ROUTE_NO('123','456')")
-            if ((strParam.startsWith("HANDOFF_ROUTING_ROUTE_NO(") && strParam.endsWith(")")) ||
-                    (strParam.startsWith("HANDOFF_ROADNET_ROUTE_NO(") && strParam.endsWith(")"))) {
-
+            // Check if this appears to be a UDT constructor string
+            if (isUdtConstructor(strParam)) {
                 logger.debug("Setting parameter #{} as Oracle UDT constructor: {}", index, strParam);
 
-                // For Oracle UDTs, we need to pass the constructor string directly to Oracle for evaluation
-                // Create a PreparedStatement that executes an expression
-                // We'll use a special Oracle syntax that allows expression evaluation
-
-                // For Oracle 12c+, we can use the following approach:
-                // Create a query that selects the UDT constructor expression
-                // E.g., SELECT HANDOFF_ROUTING_ROUTE_NO('123','456') AS column_value FROM DUAL
-
-                Connection conn = statement.getConnection();
-                String udtConstructor = strParam;
-
                 try {
-                    // Extract the UDT type name from the constructor string
-                    int openParenIndex = udtConstructor.indexOf('(');
-                    String udtTypeName = udtConstructor.substring(0, openParenIndex);
+                    // For Oracle UDTs, we need to execute the constructor as a SQL expression
+                    Connection conn = statement.getConnection();
 
                     // Create a query to evaluate the UDT constructor
-                    String query = "SELECT " + udtConstructor + " AS column_value FROM DUAL";
+                    String query = "SELECT " + strParam + " AS column_value FROM DUAL";
 
                     try (Statement selectStmt = conn.createStatement();
                          ResultSet rs = selectStmt.executeQuery(query)) {
@@ -677,7 +748,7 @@ public class SqlExecutionService {
                 } catch (SQLException e) {
                     // If the UDT constructor evaluation fails, fall back to setting as string
                     logger.warn("Exception while evaluating UDT constructor ({}), falling back to string parameter: {}",
-                            udtConstructor, e.getMessage());
+                            strParam, e.getMessage());
                     statement.setString(index, strParam);
                 }
             } else {
@@ -709,6 +780,23 @@ public class SqlExecutionService {
             logger.debug("Setting parameter #{} to Object: {} (type: {})", index, param, param.getClass().getName());
             statement.setObject(index, param);
         }
+    }
+
+    /**
+     * Check if a string appears to be a UDT constructor.
+     */
+    private boolean isUdtConstructor(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return false;
+        }
+
+        // Check for known UDT patterns
+        return value.startsWith("TRANSP.HANDOFF_ROUTING_ROUTE_NO(") ||
+                value.startsWith("TRANSP.HANDOFF_ROADNET_ROUTE_NO(") ||
+                value.startsWith("HANDOFF_ROUTING_ROUTE_NO(") ||
+                value.startsWith("HANDOFF_ROADNET_ROUTE_NO(") ||
+                // Generic pattern for schema.type_name(...)
+                value.matches("^[A-Z_]+\\.[A-Z_]+\\([^)]+\\)$");
     }
 
     /**

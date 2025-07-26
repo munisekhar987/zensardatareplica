@@ -287,16 +287,25 @@ public class PostgresSourceService {
                             logger.debug("Found PGobject for column {}: type={}, value={}",
                                     columnName, pgObject.getType(), pgObject.getValue());
 
-                            // Check if this is a known UDT column
+                            // **KEY CHANGE**: Check if this specific table.column is mapped to a UDT type
                             String udtType = getUdtTypeForColumn(tableName, columnName);
                             if (udtType != null) {
-                                // Handle UDT conversion based on known type
+                                // Handle UDT conversion based on column-specific mapping
                                 logger.debug("Column {}.{} is mapped to UDT type: {}",
                                         tableName, columnName, udtType);
 
-                                // Convert using our utility
-                                String formattedValue = OracleUdtUtil.formatPgUdtForOracle(
-                                        udtType, pgObject.getValue());
+                                // Convert using our utility with the specific UDT type for this column
+                                String formattedValue;
+                                if (pgObject.getValue() != null && (pgObject.getValue().contains(")(") ||
+                                        pgObject.getValue().matches(".*\\([^)]*\\{[^}]*\\}[^)]*\\).*"))) {
+                                    // Complex UDT with multiple parts
+                                    formattedValue = OracleUdtUtil.formatComplexPgUdtForOracleByColumn(
+                                            tableName, columnName, udtType, pgObject.getValue(), udtTypeMapping);
+                                } else {
+                                    // Simple UDT conversion
+                                    formattedValue = OracleUdtUtil.formatPgUdtForOracleByColumn(
+                                            tableName, columnName, udtType, pgObject.getValue(), udtTypeMapping);
+                                }
 
                                 value = formattedValue;
                             } else {
@@ -341,8 +350,14 @@ public class PostgresSourceService {
         if (oracleType != null) {
             logger.debug("Found UDT mapping: PostgreSQL '{}' -> Oracle '{}'", type, oracleType);
 
-            // Convert using our utility method for better UDT handling
-            return OracleUdtUtil.formatPgUdtForOracle(type, value);
+            // Handle complex UDT values that might contain multiple composite types
+            if (value.contains(")(") || value.matches(".*\\([^)]*\\{[^}]*\\}[^)]*\\).*")) {
+                // Complex UDT with multiple parts
+                return OracleUdtUtil.formatComplexPgUdtForOracle(type, value);
+            } else {
+                // Simple UDT conversion
+                return OracleUdtUtil.formatPgUdtForOracle(type, value);
+            }
         }
 
         // Generic handling for common types
@@ -367,7 +382,11 @@ public class PostgresSourceService {
             case "handoff_roadnet_route_no":
                 // Special handling for these specific UDT types
                 // Convert PostgreSQL composite type to Oracle VARRAY format
-                return OracleUdtUtil.formatPgUdtForOracle(type, value);
+                if (value.contains(")(") || value.matches(".*\\([^)]*\\{[^}]*\\}[^)]*\\).*")) {
+                    return OracleUdtUtil.formatComplexPgUdtForOracle(type, value);
+                } else {
+                    return OracleUdtUtil.formatPgUdtForOracle(type, value);
+                }
 
             case "interval":
             case "hstore":

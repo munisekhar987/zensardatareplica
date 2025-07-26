@@ -29,48 +29,40 @@ spec:
             - name: KAFKA_GROUP_ID
               value: "transp-medium-low-group-2"
             - name: CDC_TOPICS
-              value: "devtest.transp.deliveryconfirm,devtest.transp.handoff_batchstop,devtest.transp.fdx_trip_order,devtest.transp.fdx_trip,devtest.transp.fdx_staff,devtest.transp.fdx_trip_staff,devtest.transp.handoff_batchroute,devtest.transp.handoff_batchaction,devtest.transp.handoff_batchtrailer,devtest.transp.handoff_batchsession,devtest.transp.handoff_batch,devtest.transp.dispatch,devtest.transp.dispatch_resource,devtest.transp.tip_distribution_batch"
+              value: "devtest.transp.deliveryconfirm,devtest.transp.handoff_batchstop,devtest.transp.fdx_trip_order,devtest.transp.fdx_trip,devtest.transp.fdx_staff,devtest.transp.fdx_trip_staff,devtest.transp.handoff_batchaction,devtest.transp.handoff_batchtrailer,devtest.transp.handoff_batchsession,devtest.transp.handoff_batch,devtest.transp.dispatch,devtest.transp.dispatch_resource,devtest.transp.tip_distribution_batch"
             - name: CDC_TOPIC_TABLE_MAPPINGS
-              value: "{
-                  'devtest.transp.deliveryconfirm': 'DELIVERYCONFIRM',
-                  'devtest.transp.handoff_batchstop': 'HANDOFF_BATCHSTOP',
-                  'devtest.transp.fdx_trip_order': 'FDX_TRIP_ORDER',
-                  'devtest.transp.fdx_trip': 'FDX_TRIP',
-                  'devtest.transp.fdx_staff': 'FDX_STAFF',
-                  'devtest.transp.fdx_trip_staff': 'FDX_TRIP_STAFF',
-                  'devtest.transp.handoff_batchroute': 'HANDOFF_BATCHROUTE',
-                  'devtest.transp.handoff_batchaction': 'HANDOFF_BATCHACTION',
-                  'devtest.transp.handoff_batchtrailer': 'HANDOFF_BATCHTRAILER',
-                  'devtest.transp.handoff_batchsession': 'HANDOFF_BATCHSESSION',
-                  'devtest.transp.handoff_batch': 'HANDOFF_BATCH',
-                  'devtest.transp.dispatch': 'DISPATCH',
-                  'devtest.transp.dispatch_resource': 'DISPATCH_RESOURCE',
-                  'devtest.transp.tip_distribution_batch': 'TIP_DISTRIBUTION_BATCH'
-                }"
+              value: '{
+                  "devtest.transp.deliveryconfirm": "DELIVERYCONFIRM",
+                  "devtest.transp.handoff_batchstop": "HANDOFF_BATCHSTOP",
+                  "devtest.transp.fdx_trip_order": "FDX_TRIP_ORDER",
+                  "devtest.transp.fdx_trip": "FDX_TRIP",
+                  "devtest.transp.fdx_staff": "FDX_STAFF",
+                  "devtest.transp.fdx_trip_staff": "FDX_TRIP_STAFF",
+                  "devtest.transp.handoff_batchaction": "HANDOFF_BATCHACTION",
+                  "devtest.transp.handoff_batchtrailer": "HANDOFF_BATCHTRAILER",
+                  "devtest.transp.handoff_batchsession": "HANDOFF_BATCHSESSION",
+                  "devtest.transp.handoff_batch": "HANDOFF_BATCH",
+                  "devtest.transp.dispatch": "DISPATCH",
+                  "devtest.transp.dispatch_resource": "DISPATCH_RESOURCE",
+                  "devtest.transp.tip_distribution_batch": "TIP_DISTRIBUTION_BATCH"
+                }'
             - name: CDC_TABLE_PRIMARY_KEYS
-              value: "{
-                  'HANDOFF_BATCHSTOP': 'batch_id,weborder_id',
-                  'FDX_TRIP_ORDER': 'trip_id,order_id',
-                  'FDX_TRIP': 'trip_id',
-                  'FDX_STAFF': 'id',
-                  'FDX_TRIP_STAFF': 'trip_id,staff_id',
-                  'HANDOFF_BATCHROUTE': 'batch_id,session_name,route_no',
-                  'HANDOFF_BATCHACTION': 'batch_id,action_datetime',
-                  'HANDOFF_BATCHTRAILER': 'batch_id,trailer_no',
-                  'HANDOFF_BATCHSESSION': 'batch_id,session_name',
-                  'HANDOFF_BATCH': 'batch_id',
-                  'DISPATCH': 'dispatch_id',
-                  'DISPATCH_RESOURCE': 'dispatch_id,resource_id',
-                  'TIP_DISTRIBUTION_BATCH': 'batch_id,week_of,delivery_date'
-                }"
+              value: '{
+                  "HANDOFF_BATCHSTOP": "batch_id,weborder_id",
+                  "FDX_TRIP_ORDER": "trip_id,order_id",
+                  "FDX_TRIP": "trip_id",
+                  "FDX_STAFF": "id",
+                  "FDX_TRIP_STAFF": "trip_id,staff_id",
+                  "HANDOFF_BATCHACTION": "batch_id,action_datetime",
+                  "HANDOFF_BATCHTRAILER": "batch_id,trailer_no",
+                  "HANDOFF_BATCHSESSION": "batch_id,session_name",
+                  "HANDOFF_BATCH": "batch_id",
+                  "DISPATCH": "dispatch_id",
+                  "DISPATCH_RESOURCE": "dispatch_id,resource_id",
+                  "TIP_DISTRIBUTION_BATCH": "batch_id,week_of,delivery_date"
+                }'
             - name: CDC_ALLOW_DUPLICATES
               value: "DELIVERYCONFIRM"
-            - name: POSTGRES_UDT_TABLES
-              value: "HANDOFF_BATCHROUTE:BATCH_ID"
-            - name: POSTGRES_UDT_TYPE_MAPPING
-              value: "{'handoff_routing_route_no':'HANDOFF_ROUTING_ROUTE_NO', 'handoff_roadnet_route_no':'HANDOFF_ROADNET_ROUTE_NO'}"
-            - name: POSTGRES_UDT_COLUMN_MAPPING
-              value: "{'HANDOFF_BATCHROUTE.ROUTING_ROUTE_NO':'handoff_routing_route_no', 'HANDOFF_BATCHROUTE.RN_ROUTE_ID':'handoff_roadnet_route_no'}"
             - name: SPRING_KAFKA_CONSUMER_MAX_POLL_RECORDS
               value: "1000"
             - name: ORACLE_SCHEMA
@@ -78,8 +70,6 @@ spec:
             - name: ORACLE_USER
               value: "transp"
             - name: ORACLE_PASSWORD
-              value: "transp"
-            - name: POSTGRES_SCHEMA
               value: "transp"
           resources:
             requests:

@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cdc-consumer-handoff-batchroute
+  namespace: cdc-consumers
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cdc-consumer-handoff-batchroute
+  template:
+    metadata:
+      labels:
+        app: cdc-consumer-handoff-batchroute
+        schema: transp
+        group: udt-tables
+    spec:
+      containers:
+        - name: cdc-consumer
+          image: sekharmuni/cdc-consumer:batchroute1
+          ports:
+            - containerPort: 9095
+          envFrom:
+            - configMapRef:
+                name: cdc-consumer-config
+            - secretRef:
+                name: cdc-consumer-secrets
+          env:
+            - name: KAFKA_GROUP_ID
+              value: "transp-handoff-batchroute-group"
+            - name: CDC_TOPICS
+              value: "devtest.transp.handoff_batchroute"
+            - name: CDC_TOPIC_TABLE_MAPPINGS
+              value: '{"devtest.transp.handoff_batchroute": "HANDOFF_BATCHROUTE"}'
+            - name: CDC_TABLE_PRIMARY_KEYS
+              value: '{"HANDOFF_BATCHROUTE": "batch_id,session_name,route_no"}'
+            - name: POSTGRES_UDT_TABLES
+              value: "HANDOFF_BATCHROUTE:BATCH_ID"
+            - name: POSTGRES_UDT_TYPE_MAPPING
+              value: '{"handoff_routing_route_no":"HANDOFF_ROUTING_ROUTE_NO", "handoff_roadnet_route_no":"HANDOFF_ROADNET_ROUTE_NO"}'
+            - name: POSTGRES_UDT_COLUMN_MAPPING
+              value: '{"HANDOFF_BATCHROUTE.ROUTING_ROUTE_NO":"handoff_routing_route_no", "HANDOFF_BATCHROUTE.RN_ROUTE_ID":"handoff_roadnet_route_no"}'
+            - name: SPRING_KAFKA_CONSUMER_MAX_POLL_RECORDS
+              value: "500"
+            - name: ORACLE_SCHEMA
+              value: "TRANSP"
+            - name: ORACLE_USER
+              value: "transp"
+            - name: ORACLE_PASSWORD
+              value: "transp"
+            - name: POSTGRES_SCHEMA
+              value: "transp"
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1000m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 9095
+            initialDelaySeconds: 120
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 9095
+            initialDelaySeconds: 60
+            periodSeconds: 15

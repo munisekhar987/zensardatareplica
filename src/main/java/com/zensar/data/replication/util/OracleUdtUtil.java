@@ -2,197 +2,285 @@ package com.zensar.data.replication.util;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import java.sql.Connection;
-import java.sql.DatabaseMetaData;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.util.HashMap;
+
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
- * Utility class for handling Oracle UDT types.
- * Helps with type mapping and conversion between PostgreSQL and Oracle.
+ * Utility class for converting PostgreSQL UDT values to Oracle UDT format.
+ * Handles conversion of PostgreSQL composite types and arrays to Oracle VARRAY format.
  */
 public class OracleUdtUtil {
     private static final Logger logger = LoggerFactory.getLogger(OracleUdtUtil.class);
 
-    // Cache of UDT type info to avoid repeated metadata queries
-    private static final Map<String, String> udtTypeCache = new HashMap<>();
+    // Pattern to match PostgreSQL composite type format: (value1,value2,...)
+    private static final Pattern PG_COMPOSITE_PATTERN = Pattern.compile("\\(([^)]+)\\)");
+
+    // Pattern to match PostgreSQL array format: {value1,value2,...} or {"value1","value2",...}
+    private static final Pattern PG_ARRAY_PATTERN = Pattern.compile("\\{([^}]+)\\}");
 
     /**
-     * Check if a table column is an Oracle UDT type
+     * Convert PostgreSQL UDT value to Oracle UDT constructor format using column-specific mapping.
+     * This method uses the column mapping to determine the correct Oracle UDT type.
      *
-     * @param connection Oracle database connection
-     * @param schema Schema name
-     * @param tableName Table name
-     * @param columnName Column name
-     * @return true if the column is a UDT type
+     * @param tableName The table name
+     * @param columnName The column name
+     * @param pgUdtType The PostgreSQL UDT type from column mapping
+     * @param pgValue The PostgreSQL UDT value
+     * @param typeMapping The UDT type mapping configuration
+     * @return Oracle UDT constructor string
      */
-    public static boolean isUdtColumn(Connection connection, String schema, String tableName, String columnName) {
-        try {
-            String typeInfo = getColumnTypeInfo(connection, schema, tableName, columnName);
-            return typeInfo != null && !typeInfo.isEmpty() && !isStandardType(typeInfo);
-        } catch (SQLException e) {
-            logger.error("Error checking if column is UDT: {}", e.getMessage(), e);
-            return false;
-        }
-    }
-
-    /**
-     * Get type information for a column
-     *
-     * @param connection Oracle database connection
-     * @param schema Schema name
-     * @param tableName Table name
-     * @param columnName Column name
-     * @return Type name for the column
-     */
-    public static String getColumnTypeInfo(Connection connection, String schema, String tableName, String columnName)
-            throws SQLException {
-
-        // Check cache first
-        String cacheKey = schema.toUpperCase() + "." + tableName.toUpperCase() + "." + columnName.toUpperCase();
-        if (udtTypeCache.containsKey(cacheKey)) {
-            return udtTypeCache.get(cacheKey);
-        }
-
-        DatabaseMetaData metaData = connection.getMetaData();
-        String typeName = null;
-
-        try (ResultSet columns = metaData.getColumns(null, schema.toUpperCase(),
-                tableName.toUpperCase(), columnName.toUpperCase())) {
-
-            if (columns.next()) {
-                typeName = columns.getString("TYPE_NAME");
-                logger.debug("Column {}.{}.{} has type: {}",
-                        schema, tableName, columnName, typeName);
-
-                // Cache the result
-                udtTypeCache.put(cacheKey, typeName);
-            } else {
-                logger.warn("Column {}.{}.{} not found in metadata",
-                        schema, tableName, columnName);
-            }
-        }
-
-        return typeName;
-    }
-
-    /**
-     * Check if a type is a standard SQL type (not a UDT)
-     *
-     * @param typeName Type name from metadata
-     * @return true if it's a standard type
-     */
-    private static boolean isStandardType(String typeName) {
-        if (typeName == null) return true;
-
-        String upperType = typeName.toUpperCase();
-
-        // List of standard Oracle types
-        return upperType.equals("VARCHAR2") ||
-                upperType.equals("NVARCHAR2") ||
-                upperType.equals("CHAR") ||
-                upperType.equals("NCHAR") ||
-                upperType.equals("NUMBER") ||
-                upperType.equals("INTEGER") ||
-                upperType.equals("FLOAT") ||
-                upperType.equals("BINARY_FLOAT") ||
-                upperType.equals("BINARY_DOUBLE") ||
-                upperType.equals("DATE") ||
-                upperType.equals("TIMESTAMP") ||
-                upperType.equals("CLOB") ||
-                upperType.equals("NCLOB") ||
-                upperType.equals("BLOB") ||
-                upperType.equals("RAW") ||
-                upperType.equals("LONG RAW") ||
-                upperType.equals("ROWID") ||
-                upperType.equals("UROWID");
-    }
-
-    /**
-     * Format a PostgreSQL UDT value for Oracle
-     *
-     * @param pgUdtType PostgreSQL UDT type name
-     * @param pgUdtValue PostgreSQL UDT value
-     * @return Formatted value for Oracle
-     */
-    public static String formatPgUdtForOracle(String pgUdtType, String pgUdtValue) {
-        if (pgUdtValue == null) {
+    public static String formatPgUdtForOracleByColumn(String tableName, String columnName,
+                                                      String pgUdtType, String pgValue,
+                                                      Map<String, String> typeMapping) {
+        if (pgValue == null || pgValue.trim().isEmpty()) {
             return null;
         }
 
-        logger.debug("Formatting PostgreSQL UDT: {} with value: {}", pgUdtType, pgUdtValue);
+        logger.debug("Converting PostgreSQL UDT for column {}.{}: pgUdtType={}, value={}",
+                tableName, columnName, pgUdtType, pgValue);
 
-        // Handle specific UDT types
-        switch (pgUdtType.toLowerCase()) {
-            case "handoff_routing_route_no":
-            case "handoff_roadnet_route_no":
-                return formatArrayUdt(pgUdtType, pgUdtValue);
+        try {
+            // Get the Oracle UDT type from the type mapping
+            String oracleUdtType = typeMapping.get(pgUdtType.toLowerCase());
+            if (oracleUdtType == null) {
+                logger.warn("No Oracle UDT mapping found for PostgreSQL type: {}", pgUdtType);
+                oracleUdtType = pgUdtType.toUpperCase();
+            }
 
-            default:
-                // For unknown types, return as is
-                return pgUdtValue;
+            // Add schema prefix if not present
+            if (!oracleUdtType.contains(".")) {
+                oracleUdtType = "TRANSP." + oracleUdtType;
+            }
+
+            // Parse the PostgreSQL value and convert to Oracle format
+            String oracleValue = convertPgValueToOracleFormat(pgValue);
+
+            // Construct Oracle UDT constructor
+            String result = oracleUdtType + "(" + oracleValue + ")";
+
+            logger.debug("Converted UDT for column {}.{}: {} -> {}",
+                    tableName, columnName, pgValue, result);
+            return result;
+
+        } catch (Exception e) {
+            logger.error("Error converting PostgreSQL UDT value '{}' of type '{}' for column {}.{}: {}",
+                    pgValue, pgUdtType, tableName, columnName, e.getMessage());
+            return null;
         }
     }
 
     /**
-     * Format a PostgreSQL array UDT value for Oracle VARRAY
+     * Convert PostgreSQL UDT value to Oracle UDT constructor format.
      *
-     * @param udtType UDT type name
-     * @param udtValue UDT value from PostgreSQL
-     * @return Formatted value for Oracle
+     * @param udtType The UDT type name (e.g., "handoff_routing_route_no")
+     * @param pgValue The PostgreSQL UDT value
+     * @return Oracle UDT constructor string
      */
-    private static String formatArrayUdt(String udtType, String udtValue) {
-        // Extract array portion from PostgreSQL composite type
-        // PostgreSQL format might be: ({"123","456","789"})
-        String arrayValue = udtValue;
-
-        // Remove outer parentheses if present
-        if (arrayValue.startsWith("(") && arrayValue.endsWith(")")) {
-            arrayValue = arrayValue.substring(1, arrayValue.length() - 1);
+    public static String formatPgUdtForOracle(String udtType, String pgValue) {
+        if (pgValue == null || pgValue.trim().isEmpty()) {
+            return null;
         }
 
-        // Handle case where the value is a nested structure
-        if (arrayValue.contains("={")) {
-            // Format might be: handoff_routing_route_no={"123","456"}
-            int equalsIndex = arrayValue.indexOf('=');
-            if (equalsIndex >= 0 && arrayValue.length() > equalsIndex + 1) {
-                arrayValue = arrayValue.substring(equalsIndex + 1);
+        logger.debug("Converting PostgreSQL UDT: type={}, value={}", udtType, pgValue);
+
+        try {
+            // Map PostgreSQL UDT type to Oracle UDT type
+            String oracleUdtType = mapPgTypeToOracleType(udtType);
+
+            // Parse the PostgreSQL value and convert to Oracle format
+            String oracleValue = convertPgValueToOracleFormat(pgValue);
+
+            // Construct Oracle UDT constructor
+            String result = oracleUdtType + "(" + oracleValue + ")";
+
+            logger.debug("Converted UDT: {} -> {}", pgValue, result);
+            return result;
+
+        } catch (Exception e) {
+            logger.error("Error converting PostgreSQL UDT value '{}' of type '{}': {}",
+                    pgValue, udtType, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Map PostgreSQL UDT type name to Oracle UDT type name.
+     */
+    private static String mapPgTypeToOracleType(String pgType) {
+        switch (pgType.toLowerCase()) {
+            case "handoff_routing_route_no":
+                return "TRANSP.HANDOFF_ROUTING_ROUTE_NO";
+            case "handoff_roadnet_route_no":
+                return "TRANSP.HANDOFF_ROADNET_ROUTE_NO";
+            default:
+                // Default mapping - convert to uppercase and add schema prefix
+                return "TRANSP." + pgType.toUpperCase();
+        }
+    }
+
+    /**
+     * Convert PostgreSQL value format to Oracle VARRAY format.
+     * Handles various PostgreSQL formats:
+     * - Simple values: 576-1
+     * - Composite types: (576-1)
+     * - Arrays: {value1,value2,...}
+     * - Quoted arrays: {"value1","value2",...}
+     */
+    private static String convertPgValueToOracleFormat(String pgValue) {
+        String trimmedValue = pgValue.trim();
+
+        // Handle composite type format: (value1,value2,...)
+        Matcher compositeMatcher = PG_COMPOSITE_PATTERN.matcher(trimmedValue);
+        if (compositeMatcher.find()) {
+            String innerValue = compositeMatcher.group(1);
+            return convertArrayToOracleFormat(innerValue);
+        }
+
+        // Handle array format: {value1,value2,...}
+        Matcher arrayMatcher = PG_ARRAY_PATTERN.matcher(trimmedValue);
+        if (arrayMatcher.find()) {
+            String innerValue = arrayMatcher.group(1);
+            return convertArrayToOracleFormat(innerValue);
+        }
+
+        // Handle simple value
+        return "'" + trimmedValue + "'";
+    }
+
+    /**
+     * Convert comma-separated values to Oracle VARRAY format.
+     */
+    private static String convertArrayToOracleFormat(String arrayContent) {
+        if (arrayContent == null || arrayContent.trim().isEmpty()) {
+            return "";
+        }
+
+        // Split by comma and process each value
+        String[] values = arrayContent.split(",");
+        StringBuilder result = new StringBuilder();
+
+        for (int i = 0; i < values.length; i++) {
+            String value = values[i].trim();
+
+            // Remove surrounding quotes if present
+            if (value.startsWith("\"") && value.endsWith("\"")) {
+                value = value.substring(1, value.length() - 1);
             }
+
+            if (i > 0) {
+                result.append(", ");
+            }
+
+            result.append("'").append(value).append("'");
         }
 
-        // Convert to Oracle VARRAY format: HANDOFF_ROUTING_ROUTE_NO('123','456','789')
-        if (arrayValue.startsWith("{") && arrayValue.endsWith("}")) {
-            // Remove the curly braces
-            arrayValue = arrayValue.substring(1, arrayValue.length() - 1);
+        return result.toString();
+    }
 
-            // Split the array elements
-            String[] elements = arrayValue.split(",");
+    /**
+     * Handle complex PostgreSQL UDT values that contain multiple composite types.
+     * Example input: "({576-1})({577-3})({577-2})({530-4})({271-1})({"060-1,060-1,060-1,..."})"
+     */
+    public static String formatComplexPgUdtForOracle(String udtType, String complexPgValue) {
+        if (complexPgValue == null || complexPgValue.trim().isEmpty()) {
+            return null;
+        }
 
-            // Build Oracle VARRAY constructor format
-            StringBuilder oracleFormat = new StringBuilder();
-            oracleFormat.append(udtType.toUpperCase()).append("(");
+        logger.debug("Converting complex PostgreSQL UDT: type={}, value={}", udtType, complexPgValue);
 
-            boolean first = true;
-            for (String element : elements) {
-                // Remove any quotes
-                element = element.trim().replace("\"", "");
+        try {
+            String oracleUdtType = mapPgTypeToOracleType(udtType);
 
-                if (!first) {
-                    oracleFormat.append(",");
+            // Find all composite patterns in the complex value
+            Matcher matcher = PG_COMPOSITE_PATTERN.matcher(complexPgValue);
+            StringBuilder allValues = new StringBuilder();
+
+            while (matcher.find()) {
+                String innerValue = matcher.group(1);
+
+                if (allValues.length() > 0) {
+                    allValues.append(", ");
                 }
-                oracleFormat.append("'").append(element).append("'");
-                first = false;
+
+                // Convert each composite part
+                String convertedValue = convertArrayToOracleFormat(innerValue);
+                allValues.append(convertedValue);
             }
 
-            oracleFormat.append(")");
+            if (allValues.length() == 0) {
+                // Fallback: treat the entire value as a simple array
+                return formatPgUdtForOracle(udtType, complexPgValue);
+            }
 
-            logger.debug("Converted array UDT to Oracle format: {}", oracleFormat.toString());
-            return oracleFormat.toString();
+            String result = oracleUdtType + "(" + allValues.toString() + ")";
+            logger.debug("Converted complex UDT: {} -> {}", complexPgValue, result);
+            return result;
+
+        } catch (Exception e) {
+            logger.error("Error converting complex PostgreSQL UDT value '{}' of type '{}': {}",
+                    complexPgValue, udtType, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Handle complex PostgreSQL UDT values using column-specific mapping.
+     */
+    public static String formatComplexPgUdtForOracleByColumn(String tableName, String columnName,
+                                                             String pgUdtType, String complexPgValue,
+                                                             Map<String, String> typeMapping) {
+        if (complexPgValue == null || complexPgValue.trim().isEmpty()) {
+            return null;
         }
 
-        // If we can't parse it, return as is
-        return udtValue;
+        logger.debug("Converting complex PostgreSQL UDT for column {}.{}: pgUdtType={}, value={}",
+                tableName, columnName, pgUdtType, complexPgValue);
+
+        try {
+            // Get the Oracle UDT type from the type mapping
+            String oracleUdtType = typeMapping.get(pgUdtType.toLowerCase());
+            if (oracleUdtType == null) {
+                logger.warn("No Oracle UDT mapping found for PostgreSQL type: {}", pgUdtType);
+                oracleUdtType = pgUdtType.toUpperCase();
+            }
+
+            // Add schema prefix if not present
+            if (!oracleUdtType.contains(".")) {
+                oracleUdtType = "TRANSP." + oracleUdtType;
+            }
+
+            // Find all composite patterns in the complex value
+            Matcher matcher = PG_COMPOSITE_PATTERN.matcher(complexPgValue);
+            StringBuilder allValues = new StringBuilder();
+
+            while (matcher.find()) {
+                String innerValue = matcher.group(1);
+
+                if (allValues.length() > 0) {
+                    allValues.append(", ");
+                }
+
+                // Convert each composite part
+                String convertedValue = convertArrayToOracleFormat(innerValue);
+                allValues.append(convertedValue);
+            }
+
+            if (allValues.length() == 0) {
+                // Fallback: treat the entire value as a simple array
+                return formatPgUdtForOracleByColumn(tableName, columnName, pgUdtType, complexPgValue, typeMapping);
+            }
+
+            String result = oracleUdtType + "(" + allValues.toString() + ")";
+            logger.debug("Converted complex UDT for column {}.{}: {} -> {}",
+                    tableName, columnName, complexPgValue, result);
+            return result;
+
+        } catch (Exception e) {
+            logger.error("Error converting complex PostgreSQL UDT value '{}' of type '{}' for column {}.{}: {}",
+                    complexPgValue, pgUdtType, tableName, columnName, e.getMessage());
+            return null;
+        }
     }
 }
