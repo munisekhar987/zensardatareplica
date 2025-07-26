@@ -39,13 +39,10 @@ spec:
                   'devtest.transp.fdx_staff': 'FDX_STAFF',
                   'devtest.transp.fdx_trip_staff': 'FDX_TRIP_STAFF',
                   'devtest.transp.handoff_batchroute': 'HANDOFF_BATCHROUTE',
-                  'devtest.transp.handoff_batchdispatchex': 'HANDOFF_BATCHDISPATCHEX',
                   'devtest.transp.handoff_batchaction': 'HANDOFF_BATCHACTION',
                   'devtest.transp.handoff_batchtrailer': 'HANDOFF_BATCHTRAILER',
                   'devtest.transp.handoff_batchsession': 'HANDOFF_BATCHSESSION',
                   'devtest.transp.handoff_batch': 'HANDOFF_BATCH',
-                  'devtest.transp.handoff_batchdepotschedule': 'HANDOFF_BATCHDEPOTSCHEDULE',
-                  'devtest.transp.handoff_batchroute_breaks': 'HANDOFF_BATCHROUTE_BREAKS',
                   'devtest.transp.dispatch': 'DISPATCH',
                   'devtest.transp.dispatch_resource': 'DISPATCH_RESOURCE',
                   'devtest.transp.tip_distribution_batch': 'TIP_DISTRIBUTION_BATCH'
@@ -58,13 +55,10 @@ spec:
                   'FDX_STAFF': 'id',
                   'FDX_TRIP_STAFF': 'trip_id,staff_id',
                   'HANDOFF_BATCHROUTE': 'batch_id,session_name,route_no',
-                  'HANDOFF_BATCHDISPATCHEX': 'batch_id,dispatchtime',
                   'HANDOFF_BATCHACTION': 'batch_id,action_datetime',
                   'HANDOFF_BATCHTRAILER': 'batch_id,trailer_no',
                   'HANDOFF_BATCHSESSION': 'batch_id,session_name',
                   'HANDOFF_BATCH': 'batch_id',
-                  'HANDOFF_BATCHDEPOTSCHEDULE': 'batch_id,area,depotarrivaltime,truckdeparturetime,origin_id',
-                  'HANDOFF_BATCHROUTE_BREAKS': 'break_id,batch_id,session_name,route_no',
                   'DISPATCH': 'dispatch_id',
                   'DISPATCH_RESOURCE': 'dispatch_id,resource_id',
                   'TIP_DISTRIBUTION_BATCH': 'batch_id,week_of,delivery_date'
@@ -81,6 +75,10 @@ spec:
               value: "1000"
             - name: ORACLE_SCHEMA
               value: "TRANSP"
+            - name: ORACLE_USER
+              value: "transp"
+            - name: ORACLE_PASSWORD
+              value: "transp"
             - name: POSTGRES_SCHEMA
               value: "transp"
           resources:

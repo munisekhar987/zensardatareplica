@@ -38,6 +38,10 @@ spec:
               value: "150000"
             - name: ORACLE_SCHEMA
               value: "FRESHCLIC"
+            - name: ORACLE_USER
+              value: "freshclic"
+            - name: ORACLE_PASSWORD
+              value: "freshclic"
             - name: POSTGRES_SCHEMA
               value: "freshclic"
           resources:

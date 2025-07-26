@@ -40,6 +40,10 @@ spec:
               value: "100000"
             - name: ORACLE_SCHEMA
               value: "MIS"
+            - name: ORACLE_USER
+              value: "mis"
+            - name: ORACLE_PASSWORD
+              value: "mis"
             - name: POSTGRES_SCHEMA
               value: "mis"
           resources:

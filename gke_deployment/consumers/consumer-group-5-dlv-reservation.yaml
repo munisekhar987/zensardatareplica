@@ -36,6 +36,10 @@ spec:
               value: "800"
             - name: ORACLE_SCHEMA
               value: "DLV"
+            - name: ORACLE_USER
+              value: "dlv"
+            - name: ORACLE_PASSWORD
+              value: "dlv"
             - name: POSTGRES_SCHEMA
               value: "dlv"
           resources:

@@ -40,6 +40,10 @@ spec:
               value: "TIP_DISTRIBUTION"
             - name: ORACLE_SCHEMA
               value: "TRANSP"
+            - name: ORACLE_USER
+              value: "transp"
+            - name: ORACLE_PASSWORD
+              value: "transp"
             - name: POSTGRES_SCHEMA
               value: "transp"
           resources:
