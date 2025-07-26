@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: enhanced-consumer-service_fdxordder
+  name: enhanced-consumer-service-fdxordder
   namespace: enhanced-consumers
 spec:
   selector:
