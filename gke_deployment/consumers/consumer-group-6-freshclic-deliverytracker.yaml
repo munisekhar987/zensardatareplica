@@ -27,9 +27,9 @@ spec:
             - name: KAFKA_GROUP_ID
               value: "freshclic-all-group"
             - name: CDC_TOPICS
-              value: "pt.fdstore_prda.deliverytracker"
+              value: "devtest.freshclic.deliverytracker"
             - name: CDC_TOPIC_TABLE_MAPPINGS
-              value: "{'pt.fdstore_prda.deliverytracker': 'DELIVERYTRACKER'}"
+              value: "{'devtest.freshclic.deliverytracker': 'DELIVERYTRACKER'}"
             - name: CDC_TABLE_PRIMARY_KEYS
               value: "{'DELIVERYTRACKER': 'id'}"
             - name: SPRING_KAFKA_CONSUMER_MAX_POLL_RECORDS
@@ -37,9 +37,9 @@ spec:
             - name: SPRING_KAFKA_CONSUMER_FETCH_MIN_BYTES
               value: "150000"
             - name: ORACLE_SCHEMA
-              value: "FDSTORE_PRDA"
+              value: "FRESHCLIC"
             - name: POSTGRES_SCHEMA
-              value: "fdstore_prda"
+              value: "freshclic"
           resources:
             requests:
               memory: "2Gi"

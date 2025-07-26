@@ -29,9 +29,9 @@ spec:
             - name: KAFKA_GROUP_ID
               value: "transp-high-distribution-group-2"
             - name: CDC_TOPICS
-              value: "pt.fdstore_prda.tip_distribution,pt.fdstore_prda.fdx_orderaction"
+              value: "devtest.transp.tip_distribution,devtest.transp.fdx_orderaction"
             - name: CDC_TOPIC_TABLE_MAPPINGS
-              value: "{'pt.fdstore_prda.tip_distribution': 'TIP_DISTRIBUTION','pt.fdstore_prda.fdx_orderaction': 'FDX_ORDERACTION'}"
+              value: "{'devtest.transp.tip_distribution': 'TIP_DISTRIBUTION','devtest.transp.fdx_orderaction': 'FDX_ORDERACTION'}"
             - name: CDC_TABLE_PRIMARY_KEYS
               value: "{'FDX_ORDERACTION': 'id'}"
             - name: SPRING_KAFKA_CONSUMER_MAX_POLL_RECORDS
@@ -39,9 +39,9 @@ spec:
             - name: CDC_ALLOW_DUPLICATES
               value: "TIP_DISTRIBUTION"
             - name: ORACLE_SCHEMA
-              value: "FDSTORE_PRDA"
+              value: "TRANSP"
             - name: POSTGRES_SCHEMA
-              value: "fdstore_prda"
+              value: "transp"
           resources:
             requests:
               memory: "2Gi"

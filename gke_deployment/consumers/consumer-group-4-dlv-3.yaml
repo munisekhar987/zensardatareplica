@@ -27,24 +27,24 @@ spec:
             - name: KAFKA_GROUP_ID
               value: "dlv-all-3-tables"
             - name: CDC_TOPICS
-              value: "pt.fdstore_prda.delivery_building,pt.fdstore_prda.delivery_location,pt.fdstore_prda.delivery_building_detail"
+              value: "devtest.dlv.delivery_building,devtest.dlv.delivery_location,devtest.dlv.delivery_building_detail"
             - name: CDC_TOPIC_TABLE_MAPPINGS
-              value: "{'pt.fdstore_prda.delivery_building': 'DELIVERY_BUILDING', 'pt.fdstore_prda.delivery_location': 'DELIVERY_LOCATION', 'pt.fdstore_prda.delivery_building_detail': 'DELIVERY_BUILDING_DETAIL'}"
+              value: "{'devtest.dlv.delivery_building': 'DELIVERY_BUILDING', 'devtest.dlv.delivery_location': 'DELIVERY_LOCATION', 'devtest.dlv.delivery_building_detail': 'DELIVERY_BUILDING_DETAIL'}"
             - name: CDC_TABLE_PRIMARY_KEYS
               value: "{'DELIVERY_BUILDING': 'id', 'DELIVERY_LOCATION': 'id', 'DELIVERY_BUILDING_DETAIL': 'delivery_building_id'}"
             - name: SPRING_KAFKA_CONSUMER_MAX_POLL_RECORDS
               value: "800"
             - name: ORACLE_SCHEMA
-              value: "FDSTORE_PRDA"
+              value: "DLV"
             - name: POSTGRES_SCHEMA
-              value: "fdstore_prda"
+              value: "dlv"
           resources:
             requests:
               memory: "2Gi"
-              cpu: "4000m"
+              cpu: "1500m"
             limits:
               memory: "3Gi"
-              cpu: "6000m"
+              cpu: "4000m"
           livenessProbe:
             httpGet:
               path: /actuator/health

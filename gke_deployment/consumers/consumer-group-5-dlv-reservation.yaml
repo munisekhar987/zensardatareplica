@@ -27,17 +27,17 @@ spec:
             - name: KAFKA_GROUP_ID
               value: "dlv-reservation"
             - name: CDC_TOPICS
-              value: "pt.fdstore_prda.reservation"
+              value: "devtest.dlv.reservation"
             - name: CDC_TOPIC_TABLE_MAPPINGS
-              value: "{'pt.fdstore_prda.reservation': 'RESERVATION'}"
+              value: "{'devtest.dlv.reservation': 'RESERVATION'}"
             - name: CDC_TABLE_PRIMARY_KEYS
               value: "{'RESERVATION': 'id'}"
             - name: SPRING_KAFKA_CONSUMER_MAX_POLL_RECORDS
               value: "800"
             - name: ORACLE_SCHEMA
-              value: "FDSTORE_PRDA"
+              value: "DLV"
             - name: POSTGRES_SCHEMA
-              value: "fdstore_prda"
+              value: "dlv"
           resources:
             requests:
               memory: "2Gi"

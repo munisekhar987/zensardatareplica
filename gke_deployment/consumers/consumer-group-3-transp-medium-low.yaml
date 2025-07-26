@@ -29,31 +29,29 @@ spec:
             - name: KAFKA_GROUP_ID
               value: "transp-medium-low-group"
             - name: CDC_TOPICS
-              value: "pt.fdstore_prda.deliveryconfirm,pt.fdstore_prda.handoff_batchstop,pt.fdstore_prda.fdx_trip_order,pt.fdstore_prda.fdx_trip,pt.fdstore_prda.fdx_staff,pt.fdstore_prda.fdx_trip_staff,pt.fdstore_prda.handoff_batchroute,pt.fdstore_prda.handoff_batchdispatchex,pt.fdstore_prda.handoff_batchaction,pt.fdstore_prda.handoff_batchtrailer,pt.fdstore_prda.handoff_batchsession,pt.fdstore_prda.handoff_batch,pt.fdstore_prda.handoff_batchdepotschedule,pt.fdstore_prda.handoff_batchroute_breaks,pt.fdstore_prda.dispatch,pt.fdstore_prda.dispatch_resource,pt.fdstore_prda.tip_distribution_batch"
+              value: "devtest.transp.deliveryconfirm,devtest.transp.handoff_batchstop,devtest.transp.fdx_trip_order,devtest.transp.fdx_trip,devtest.transp.fdx_staff,devtest.transp.fdx_trip_staff,devtest.transp.handoff_batchroute,devtest.transp.handoff_batchdispatchex,devtest.transp.handoff_batchaction,devtest.transp.handoff_batchtrailer,devtest.transp.handoff_batchsession,devtest.transp.handoff_batch,devtest.transp.handoff_batchdepotschedule,devtest.transp.handoff_batchroute_breaks,devtest.transp.dispatch,devtest.transp.dispatch_resource,devtest.transp.tip_distribution_batch"
             - name: CDC_TOPIC_TABLE_MAPPINGS
-              value: |
-                {
-                  'pt.fdstore_prda.deliveryconfirm': 'DELIVERYCONFIRM',
-                  'pt.fdstore_prda.handoff_batchstop': 'HANDOFF_BATCHSTOP',
-                  'pt.fdstore_prda.fdx_trip_order': 'FDX_TRIP_ORDER',
-                  'pt.fdstore_prda.fdx_trip': 'FDX_TRIP',
-                  'pt.fdstore_prda.fdx_staff': 'FDX_STAFF',
-                  'pt.fdstore_prda.fdx_trip_staff': 'FDX_TRIP_STAFF',
-                  'pt.fdstore_prda.handoff_batchroute': 'HANDOFF_BATCHROUTE',
-                  'pt.fdstore_prda.handoff_batchdispatchex': 'HANDOFF_BATCHDISPATCHEX',
-                  'pt.fdstore_prda.handoff_batchaction': 'HANDOFF_BATCHACTION',
-                  'pt.fdstore_prda.handoff_batchtrailer': 'HANDOFF_BATCHTRAILER',
-                  'pt.fdstore_prda.handoff_batchsession': 'HANDOFF_BATCHSESSION',
-                  'pt.fdstore_prda.handoff_batch': 'HANDOFF_BATCH',
-                  'pt.fdstore_prda.handoff_batchdepotschedule': 'HANDOFF_BATCHDEPOTSCHEDULE',
-                  'pt.fdstore_prda.handoff_batchroute_breaks': 'HANDOFF_BATCHROUTE_BREAKS',
-                  'pt.fdstore_prda.dispatch': 'DISPATCH',
-                  'pt.fdstore_prda.dispatch_resource': 'DISPATCH_RESOURCE',
-                  'pt.fdstore_prda.tip_distribution_batch': 'TIP_DISTRIBUTION_BATCH'
-                }
+              value: "{
+                  'devtest.transp.deliveryconfirm': 'DELIVERYCONFIRM',
+                  'devtest.transp.handoff_batchstop': 'HANDOFF_BATCHSTOP',
+                  'devtest.transp.fdx_trip_order': 'FDX_TRIP_ORDER',
+                  'devtest.transp.fdx_trip': 'FDX_TRIP',
+                  'devtest.transp.fdx_staff': 'FDX_STAFF',
+                  'devtest.transp.fdx_trip_staff': 'FDX_TRIP_STAFF',
+                  'devtest.transp.handoff_batchroute': 'HANDOFF_BATCHROUTE',
+                  'devtest.transp.handoff_batchdispatchex': 'HANDOFF_BATCHDISPATCHEX',
+                  'devtest.transp.handoff_batchaction': 'HANDOFF_BATCHACTION',
+                  'devtest.transp.handoff_batchtrailer': 'HANDOFF_BATCHTRAILER',
+                  'devtest.transp.handoff_batchsession': 'HANDOFF_BATCHSESSION',
+                  'devtest.transp.handoff_batch': 'HANDOFF_BATCH',
+                  'devtest.transp.handoff_batchdepotschedule': 'HANDOFF_BATCHDEPOTSCHEDULE',
+                  'devtest.transp.handoff_batchroute_breaks': 'HANDOFF_BATCHROUTE_BREAKS',
+                  'devtest.transp.dispatch': 'DISPATCH',
+                  'devtest.transp.dispatch_resource': 'DISPATCH_RESOURCE',
+                  'devtest.transp.tip_distribution_batch': 'TIP_DISTRIBUTION_BATCH'
+                }"
             - name: CDC_TABLE_PRIMARY_KEYS
-              value: |
-                {
+              value: "{
                   'HANDOFF_BATCHSTOP': 'batch_id,weborder_id',
                   'FDX_TRIP_ORDER': 'trip_id,order_id',
                   'FDX_TRIP': 'trip_id',
@@ -70,7 +68,7 @@ spec:
                   'DISPATCH': 'dispatch_id',
                   'DISPATCH_RESOURCE': 'dispatch_id,resource_id',
                   'TIP_DISTRIBUTION_BATCH': 'batch_id,week_of,delivery_date'
-                }
+                }"
             - name: CDC_ALLOW_DUPLICATES
               value: "DELIVERYCONFIRM"
             - name: POSTGRES_UDT_TABLES
@@ -82,9 +80,9 @@ spec:
             - name: SPRING_KAFKA_CONSUMER_MAX_POLL_RECORDS
               value: "1000"
             - name: ORACLE_SCHEMA
-              value: "FDSTORE_PRDA"
+              value: "TRANSP"
             - name: POSTGRES_SCHEMA
-              value: "fdstore_prda"
+              value: "transp"
           resources:
             requests:
               memory: "2Gi"
