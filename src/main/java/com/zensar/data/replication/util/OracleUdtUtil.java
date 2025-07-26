@@ -128,9 +128,23 @@ public class OracleUdtUtil {
      * - Arrays: {value1,value2,...}
      * - Quoted arrays: {"value1","value2",...}
      * - Single values in braces: {9988279}
+     * - Complex quoted arrays: "({040-1,040-1,...})"
      */
     private static String convertPgValueToOracleFormat(String pgValue) {
         String trimmedValue = pgValue.trim();
+
+        // Handle quoted complex arrays: "({040-1,040-1,...})"
+        if (trimmedValue.startsWith("\"(") && trimmedValue.endsWith(")\"")) {
+            // Remove outer quotes and parentheses: "({...})" -> {...}
+            String innerContent = trimmedValue.substring(2, trimmedValue.length() - 2);
+
+            // Remove braces if present: {...} -> ...
+            if (innerContent.startsWith("{") && innerContent.endsWith("}")) {
+                innerContent = innerContent.substring(1, innerContent.length() - 1);
+            }
+
+            return convertArrayToOracleFormat(innerContent);
+        }
 
         // Handle composite type format: (value1,value2,...)
         Matcher compositeMatcher = PG_COMPOSITE_PATTERN.matcher(trimmedValue);
@@ -164,22 +178,44 @@ public class OracleUdtUtil {
             }
         }
 
+        // Handle quoted single values: "value"
+        if (trimmedValue.startsWith("\"") && trimmedValue.endsWith("\"")) {
+            String innerValue = trimmedValue.substring(1, trimmedValue.length() - 1);
+
+            // Check if the quoted content is actually an array
+            if (innerValue.startsWith("{") && innerValue.endsWith("}")) {
+                innerValue = innerValue.substring(1, innerValue.length() - 1);
+                return convertArrayToOracleFormat(innerValue);
+            }
+
+            return "'" + innerValue + "'";
+        }
+
         // Handle simple value
         return "'" + trimmedValue + "'";
     }
 
     /**
      * Convert comma-separated values to Oracle VARRAY format.
-     * Enhanced to handle values that may be wrapped in braces.
+     * Enhanced to handle values that may be wrapped in braces and various PostgreSQL formats.
      */
     private static String convertArrayToOracleFormat(String arrayContent) {
         if (arrayContent == null || arrayContent.trim().isEmpty()) {
             return "";
         }
 
-        // Remove outer braces if present
         String content = arrayContent.trim();
+
+        // Log the input for debugging
+        logger.debug("Converting array content: '{}'", content);
+
+        // Remove outer braces if present: {value1,value2} -> value1,value2
         if (content.startsWith("{") && content.endsWith("}")) {
+            content = content.substring(1, content.length() - 1);
+        }
+
+        // Remove outer quotes if the entire content is quoted: "value1,value2" -> value1,value2
+        if (content.startsWith("\"") && content.endsWith("\"")) {
             content = content.substring(1, content.length() - 1);
         }
 
@@ -190,24 +226,57 @@ public class OracleUdtUtil {
         for (int i = 0; i < values.length; i++) {
             String value = values[i].trim();
 
-            // Remove surrounding quotes if present
+            // Remove surrounding quotes if present: "040-1" -> 040-1
             if (value.startsWith("\"") && value.endsWith("\"")) {
                 value = value.substring(1, value.length() - 1);
             }
 
-            // Remove individual braces if present (e.g., {9988279} -> 9988279)
+            // Remove individual braces if present: {040-1} -> 040-1
             if (value.startsWith("{") && value.endsWith("}")) {
                 value = value.substring(1, value.length() - 1);
             }
 
-            if (i > 0) {
+            // Skip empty values
+            if (value.isEmpty()) {
+                continue;
+            }
+
+            if (result.length() > 0) {
                 result.append(", ");
             }
 
             result.append("'").append(value).append("'");
         }
 
+        logger.debug("Converted array result: '{}'", result.toString());
         return result.toString();
+    }
+
+    /**
+     * Enhanced method to handle complex PostgreSQL array formats specifically.
+     * This handles cases like: "({040-1,040-1,040-1,...})"
+     */
+    private static String parseComplexPostgresArray(String pgValue) {
+        String content = pgValue.trim();
+
+        // Pattern 1: "({value1,value2,...})"
+        if (content.startsWith("\"(") && content.endsWith(")\"")) {
+            content = content.substring(2, content.length() - 2); // Remove "( and )"
+            if (content.startsWith("{") && content.endsWith("}")) {
+                content = content.substring(1, content.length() - 1); // Remove { and }
+            }
+            return convertArrayToOracleFormat(content);
+        }
+
+        // Pattern 2: "({value1},{value2},...)"
+        if (content.contains("},{")) {
+            // Handle individual braced values within the array
+            content = content.replaceAll("\\{([^}]+)\\}", "$1");
+            return convertArrayToOracleFormat(content);
+        }
+
+        // Fallback to regular conversion
+        return convertArrayToOracleFormat(content);
     }
 
     /**
