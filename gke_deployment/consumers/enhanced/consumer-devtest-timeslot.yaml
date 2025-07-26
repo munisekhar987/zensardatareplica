@@ -24,8 +24,8 @@ spec:
             - secretRef:
                 name: cdc-consumer-secrets-test-reservation
           env:
-            - name: KAFKA_GROUP_ID
-              value: "enhanced-consumer-test"
+            - name: CDC_ENHANCED_GROUP_ID
+              value: "enhanced-timeslot-consumer-test"
             - name: CDC_ENHANCED_TOPIC
               value: "devtest.dlv.timeslot"
             - name: CDC_TOPIC_TABLE_MAPPINGS
