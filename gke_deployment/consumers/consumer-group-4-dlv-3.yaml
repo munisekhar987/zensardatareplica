@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: cdc-consumer
-          image: sekharmuni/cdc-consumer:latest
+          image: sekharmuni/cdc-consumer:version1
           ports:
             - containerPort: 9095
           envFrom:
