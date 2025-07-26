@@ -5,7 +5,7 @@ metadata:
   namespace: enhanced-consumers
 spec:
   selector:
-    app: cdc-consumer-test-fdstore-reservation
+    app: cdc-consumer-devtest-fdx_order
   ports:
     - port: 9095
       targetPort: 9095

@@ -1,17 +1,17 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: cdc-consumer-test-fdstore-reservation
+  name: cdc-consumer-devtest-timeslot
   namespace: enhanced-consumers
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: cdc-consumer-test-fdstore-reservation
+      app: cdc-consumer-devtest-timeslot
   template:
     metadata:
       labels:
-        app: cdc-consumer-test-fdstore-reservation
+        app: cdc-consumer-devtest-timeslot
     spec:
       containers:
         - name: cdc-consumer
@@ -27,24 +27,28 @@ spec:
             - name: KAFKA_GROUP_ID
               value: "enhanced-consumer-test"
             - name: CDC_ENHANCED_TOPIC
-              value: "enhanced.fdstore_prda.reservation"
+              value: "devtest.dlv.timeslot"
             - name: CDC_TOPIC_TABLE_MAPPINGS
-              value: "{'enhanced.fdstore_prda.reservation': 'RESERVATION'}"
+              value: "{'devtest.dlv.timeslot': 'TIMESLOT'}"
             - name: CDC_TABLE_PRIMARY_KEYS
-              value: "{'RESERVATION': 'id'}"
+              value: "{'TIMESLOT': 'id'}"
             - name: SPRING_KAFKA_CONSUMER_MAX_POLL_RECORDS
               value: "800"
             - name: ORACLE_SCHEMA
-              value: "FDSTORE_PRDA"
+              value: "DLV"
+            - name: ORACLE_USER
+              value: "dlv"
+            - name: ORACLE_PASSWORD
+              value: "dlv"
             - name: POSTGRES_SCHEMA
-              value: "fdstore_prda"
+              value: "dlv"
           resources:
             requests:
               memory: "2Gi"
-              cpu: "1000m"
+              cpu: "2000m"
             limits:
               memory: "4Gi"
-              cpu: "2000m"
+              cpu: "4000m"
           livenessProbe:
             httpGet:
               path: /actuator/health
