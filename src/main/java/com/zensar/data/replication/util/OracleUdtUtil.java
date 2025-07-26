@@ -60,7 +60,7 @@ public class OracleUdtUtil {
             // Construct Oracle UDT constructor
             String result = oracleUdtType + "(" + oracleValue + ")";
 
-            logger.debug("Converted UDT for column {}.{}: {} -> {}",
+            logger.info("FINAL UDT CONVERSION for column {}.{}: INPUT='{}' OUTPUT='{}'",
                     tableName, columnName, pgValue, result);
             return result;
 
@@ -209,35 +209,36 @@ public class OracleUdtUtil {
         // Log the input for debugging
         logger.debug("Converting array content: '{}'", content);
 
-        // Remove outer braces if present: {value1,value2} -> value1,value2
-        if (content.startsWith("{") && content.endsWith("}")) {
-            content = content.substring(1, content.length() - 1);
-        }
+        // Handle multiple layers of quotes and braces that PostgreSQL might send
+        // Keep cleaning until no more changes
+        String previousContent;
+        do {
+            previousContent = content;
 
-        // Remove outer quotes if the entire content is quoted: "value1,value2" -> value1,value2
-        if (content.startsWith("\"") && content.endsWith("\"")) {
-            content = content.substring(1, content.length() - 1);
-        }
+            // Remove outer braces: {value1,value2} -> value1,value2
+            if (content.startsWith("{") && content.endsWith("}")) {
+                content = content.substring(1, content.length() - 1).trim();
+            }
 
-        // Split by comma and process each value
+            // Remove outer quotes: "value1,value2" -> value1,value2
+            if (content.startsWith("\"") && content.endsWith("\"")) {
+                content = content.substring(1, content.length() - 1).trim();
+            }
+
+        } while (!content.equals(previousContent)); // Continue until no more changes
+
+        // Now split by comma and process each value
         String[] values = content.split(",");
         StringBuilder result = new StringBuilder();
 
         for (int i = 0; i < values.length; i++) {
             String value = values[i].trim();
 
-            // Remove surrounding quotes if present: "040-1" -> 040-1
-            if (value.startsWith("\"") && value.endsWith("\"")) {
-                value = value.substring(1, value.length() - 1);
-            }
-
-            // Remove individual braces if present: {040-1} -> 040-1
-            if (value.startsWith("{") && value.endsWith("}")) {
-                value = value.substring(1, value.length() - 1);
-            }
+            // Clean each individual value
+            String cleanedValue = cleanIndividualValue(value);
 
             // Skip empty values
-            if (value.isEmpty()) {
+            if (cleanedValue.isEmpty()) {
                 continue;
             }
 
@@ -245,7 +246,7 @@ public class OracleUdtUtil {
                 result.append(", ");
             }
 
-            result.append("'").append(value).append("'");
+            result.append("'").append(cleanedValue).append("'");
         }
 
         logger.debug("Converted array result: '{}'", result.toString());
@@ -253,30 +254,38 @@ public class OracleUdtUtil {
     }
 
     /**
-     * Enhanced method to handle complex PostgreSQL array formats specifically.
-     * This handles cases like: "({040-1,040-1,040-1,...})"
+     * Clean an individual value by removing all PostgreSQL formatting artifacts.
      */
-    private static String parseComplexPostgresArray(String pgValue) {
-        String content = pgValue.trim();
+    private static String cleanIndividualValue(String value) {
+        if (value == null) {
+            return "";
+        }
 
-        // Pattern 1: "({value1,value2,...})"
-        if (content.startsWith("\"(") && content.endsWith(")\"")) {
-            content = content.substring(2, content.length() - 2); // Remove "( and )"
-            if (content.startsWith("{") && content.endsWith("}")) {
-                content = content.substring(1, content.length() - 1); // Remove { and }
+        String cleaned = value.trim();
+
+        // Keep cleaning until no more changes
+        String previousCleaned;
+        do {
+            previousCleaned = cleaned;
+
+            // Remove quotes: "040-1" -> 040-1
+            if (cleaned.startsWith("\"") && cleaned.endsWith("\"")) {
+                cleaned = cleaned.substring(1, cleaned.length() - 1).trim();
             }
-            return convertArrayToOracleFormat(content);
-        }
 
-        // Pattern 2: "({value1},{value2},...)"
-        if (content.contains("},{")) {
-            // Handle individual braced values within the array
-            content = content.replaceAll("\\{([^}]+)\\}", "$1");
-            return convertArrayToOracleFormat(content);
-        }
+            // Remove braces: {040-1} -> 040-1
+            if (cleaned.startsWith("{") && cleaned.endsWith("}")) {
+                cleaned = cleaned.substring(1, cleaned.length() - 1).trim();
+            }
 
-        // Fallback to regular conversion
-        return convertArrayToOracleFormat(content);
+            // Remove single quotes if they exist: '040-1' -> 040-1
+            if (cleaned.startsWith("'") && cleaned.endsWith("'")) {
+                cleaned = cleaned.substring(1, cleaned.length() - 1).trim();
+            }
+
+        } while (!cleaned.equals(previousCleaned));
+
+        return cleaned;
     }
 
     /**
