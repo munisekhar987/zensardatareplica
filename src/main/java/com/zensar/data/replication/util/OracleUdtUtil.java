@@ -129,9 +129,25 @@ public class OracleUdtUtil {
      * - Quoted arrays: {"value1","value2",...}
      * - Single values in braces: {9988279}
      * - Complex quoted arrays: "({040-1,040-1,...})"
+     * - NULL values: null, NULL, "NULL", etc.
      */
     private static String convertPgValueToOracleFormat(String pgValue) {
+        if (pgValue == null) {
+            return "null"; // Return unquoted null for actual null values
+        }
+
         String trimmedValue = pgValue.trim();
+
+        // Handle NULL values early (case-insensitive)
+        if (trimmedValue.equalsIgnoreCase("null") || trimmedValue.equalsIgnoreCase("NULL")) {
+            return "null"; // Return unquoted null
+        }
+
+        // Handle quoted NULL values: "NULL" -> null
+        if (trimmedValue.equals("\"NULL\"") || trimmedValue.equals("\"null\"") ||
+                trimmedValue.equals("'NULL'") || trimmedValue.equals("'null'")) {
+            return "null"; // Return unquoted null
+        }
 
         // Handle quoted complex arrays: "({040-1,040-1,...})"
         if (trimmedValue.startsWith("\"(") && trimmedValue.endsWith(")\"")) {
@@ -171,7 +187,11 @@ public class OracleUdtUtil {
             String innerValue = trimmedValue.substring(1, trimmedValue.length() - 1);
             // Check if it's a single value (no commas)
             if (!innerValue.contains(",")) {
-                return "'" + innerValue.trim() + "'";
+                String cleanedValue = cleanIndividualValue(innerValue);
+                if (cleanedValue == null) {
+                    return "null"; // Return unquoted null
+                }
+                return "'" + cleanedValue + "'";
             } else {
                 // Multiple values, process as array
                 return convertArrayToOracleFormat(innerValue);
@@ -188,16 +208,25 @@ public class OracleUdtUtil {
                 return convertArrayToOracleFormat(innerValue);
             }
 
-            return "'" + innerValue + "'";
+            String cleanedValue = cleanIndividualValue(innerValue);
+            if (cleanedValue == null) {
+                return "null"; // Return unquoted null
+            }
+            return "'" + cleanedValue + "'";
         }
 
         // Handle simple value
-        return "'" + trimmedValue + "'";
+        String cleanedValue = cleanIndividualValue(trimmedValue);
+        if (cleanedValue == null) {
+            return "null"; // Return unquoted null
+        }
+        return "'" + cleanedValue + "'";
     }
 
     /**
      * Convert comma-separated values to Oracle VARRAY format.
      * Enhanced to handle values that may be wrapped in braces and various PostgreSQL formats.
+     * Enhanced to handle NULL values properly.
      */
     private static String convertArrayToOracleFormat(String arrayContent) {
         if (arrayContent == null || arrayContent.trim().isEmpty()) {
@@ -237,7 +266,16 @@ public class OracleUdtUtil {
             // Clean each individual value
             String cleanedValue = cleanIndividualValue(value);
 
-            // Skip empty values
+            // Handle NULL values - they should appear as null (not quoted)
+            if (cleanedValue == null) {
+                if (result.length() > 0) {
+                    result.append(", ");
+                }
+                result.append("null"); // No quotes for null
+                continue;
+            }
+
+            // Skip completely empty values (but not null)
             if (cleanedValue.isEmpty()) {
                 continue;
             }
@@ -255,13 +293,19 @@ public class OracleUdtUtil {
 
     /**
      * Clean an individual value by removing all PostgreSQL formatting artifacts.
+     * Enhanced to handle NULL values properly.
      */
     private static String cleanIndividualValue(String value) {
         if (value == null) {
-            return "";
+            return null; // Return null for actual null values
         }
 
         String cleaned = value.trim();
+
+        // Handle NULL values (case-insensitive)
+        if (cleaned.equalsIgnoreCase("null") || cleaned.equalsIgnoreCase("NULL")) {
+            return null; // Return null for NULL string values
+        }
 
         // Keep cleaning until no more changes
         String previousCleaned;
@@ -281,6 +325,11 @@ public class OracleUdtUtil {
             // Remove single quotes if they exist: '040-1' -> 040-1
             if (cleaned.startsWith("'") && cleaned.endsWith("'")) {
                 cleaned = cleaned.substring(1, cleaned.length() - 1).trim();
+            }
+
+            // Check again for NULL after cleaning quotes/braces
+            if (cleaned.equalsIgnoreCase("null") || cleaned.equalsIgnoreCase("NULL")) {
+                return null;
             }
 
         } while (!cleaned.equals(previousCleaned));

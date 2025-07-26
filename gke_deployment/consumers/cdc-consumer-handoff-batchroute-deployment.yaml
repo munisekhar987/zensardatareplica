@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: cdc-consumer
-          image: sekharmuni/cdc-consumer:batchroute6
+          image: sekharmuni/cdc-consumer:batchroute8
           ports:
             - containerPort: 9095
           envFrom:
