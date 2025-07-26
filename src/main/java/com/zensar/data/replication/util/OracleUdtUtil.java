@@ -127,6 +127,7 @@ public class OracleUdtUtil {
      * - Composite types: (576-1)
      * - Arrays: {value1,value2,...}
      * - Quoted arrays: {"value1","value2",...}
+     * - Single values in braces: {9988279}
      */
     private static String convertPgValueToOracleFormat(String pgValue) {
         String trimmedValue = pgValue.trim();
@@ -135,6 +136,12 @@ public class OracleUdtUtil {
         Matcher compositeMatcher = PG_COMPOSITE_PATTERN.matcher(trimmedValue);
         if (compositeMatcher.find()) {
             String innerValue = compositeMatcher.group(1);
+
+            // Special case: if inner value is wrapped in braces, remove them
+            if (innerValue.startsWith("{") && innerValue.endsWith("}")) {
+                innerValue = innerValue.substring(1, innerValue.length() - 1);
+            }
+
             return convertArrayToOracleFormat(innerValue);
         }
 
@@ -145,20 +152,39 @@ public class OracleUdtUtil {
             return convertArrayToOracleFormat(innerValue);
         }
 
+        // Handle single values wrapped in braces: {9988279}
+        if (trimmedValue.startsWith("{") && trimmedValue.endsWith("}")) {
+            String innerValue = trimmedValue.substring(1, trimmedValue.length() - 1);
+            // Check if it's a single value (no commas)
+            if (!innerValue.contains(",")) {
+                return "'" + innerValue.trim() + "'";
+            } else {
+                // Multiple values, process as array
+                return convertArrayToOracleFormat(innerValue);
+            }
+        }
+
         // Handle simple value
         return "'" + trimmedValue + "'";
     }
 
     /**
      * Convert comma-separated values to Oracle VARRAY format.
+     * Enhanced to handle values that may be wrapped in braces.
      */
     private static String convertArrayToOracleFormat(String arrayContent) {
         if (arrayContent == null || arrayContent.trim().isEmpty()) {
             return "";
         }
 
+        // Remove outer braces if present
+        String content = arrayContent.trim();
+        if (content.startsWith("{") && content.endsWith("}")) {
+            content = content.substring(1, content.length() - 1);
+        }
+
         // Split by comma and process each value
-        String[] values = arrayContent.split(",");
+        String[] values = content.split(",");
         StringBuilder result = new StringBuilder();
 
         for (int i = 0; i < values.length; i++) {
@@ -166,6 +192,11 @@ public class OracleUdtUtil {
 
             // Remove surrounding quotes if present
             if (value.startsWith("\"") && value.endsWith("\"")) {
+                value = value.substring(1, value.length() - 1);
+            }
+
+            // Remove individual braces if present (e.g., {9988279} -> 9988279)
+            if (value.startsWith("{") && value.endsWith("}")) {
                 value = value.substring(1, value.length() - 1);
             }
 
