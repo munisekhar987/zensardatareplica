@@ -31,7 +31,7 @@ spec:
             - name: CDC_TOPIC_TABLE_MAPPINGS
               value: "{'devtest.transp.fdx_order': 'FDX_ORDER'}"
             - name: CDC_TABLE_PRIMARY_KEYS
-              value: "{'FDX_ORDER': 'id'}"
+              value: "{'FDX_ORDER': 'order_id'}"
             - name: SPRING_KAFKA_CONSUMER_MAX_POLL_RECORDS
               value: "800"
             - name: ORACLE_SCHEMA
